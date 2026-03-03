@@ -1779,7 +1779,14 @@ class RandomTimeWithDecodeMaskingStrategy(MaskingStrategy):
         random_ratio: float = 0.5,
         only_decode_modalities: list[str] = [],
     ):
-        """Random masking strategy except for decode modalities, which only get decoded."""
+        """Random masking strategy except for decode modalities, which only get decoded.
+
+        encode_ratio: how many encode-decode modalities get encoded, **and** the random / time
+                      encode ratio applied.
+        decode_ratio: how many encode-decode modalities get decode, **and** the random / time
+                      decode ratio applied.
+        random_ratio: how often to apply random masking vs time masking.
+        """
         self._encode_ratio = encode_ratio
         self._decode_ratio = decode_ratio
         self.only_decode_modalities = only_decode_modalities
