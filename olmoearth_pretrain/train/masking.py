@@ -1767,12 +1767,9 @@ class RandomTimeWithDecodeMaskingStrategy(MaskingStrategy):
     2. For all other band sets, we randomly select which to encode and which to decode at
        an instance level. Random or time masking is then applied per instance per bandset.
 
-    The ratio of encoded tokens will be < encode_ratio. For encode_ratio == 0.5,
-    we'd encode between 7% and 26% of tokens, from 1000 simulated masks.
-
-    Conversely, the ratio of decoded tokens can be >> decode_ratio, since we decode everything
-    we can from the only_decode_modalities. For a decode_ratio == 0.5, we'd encode between
-    26% and 92% of tokens, from 1000 simulated masks.
+    If an instance is time-encode-decode then:
+    for all the encode-decode modalities, calculate the union of present timesteps
+    randomly select some of those timesteps as encode only, and others as decode only.
     """
 
     def __init__(
