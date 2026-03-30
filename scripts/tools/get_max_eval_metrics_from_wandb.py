@@ -31,27 +31,26 @@ PARTITIONS = [
 
 
 def get_run_group_name(run_name: str, keep_steps_separate: bool = False) -> str:
-    """Extracts the group name from a run name.
+    """Extracts the group name from a run name by stripping hyperparams.
 
     Default: 'exp_step300000_dataset_lr0.001_ptmean' -> 'exp'
     keep_steps_separate: 'exp_step300000_dataset_lr0.001_ptmean' -> 'exp_step300000'
     """
     if keep_steps_separate:
-        # Include the step number in the group name, strip the hyperparams after it
-        match = re.match(r"(.+_step\d+)", run_name)
-        if match:
-            return match.group(1)
-        # Fall through to default behavior for runs without _step
-
-    # Strip everything from _step onwards (including the step number)
-    if "_step" in run_name:
-        return run_name.split("_step")[0]
-    elif "_dataset" in run_name:
-        return run_name.split("_dataset")[0]
-    elif "_pre_trained" in run_name:
-        return run_name.split("_pre_trained")[0]
+        # Greedy match up to and including _step{N}: "exp_step300000_lr..." -> "exp_step300000"
+        pattern = r"(.+_step\d+)"
     else:
-        raise ValueError(f"unexpected run name {run_name}")
+        # Non-greedy match up to (excluding) _step{N}: "exp_step300000_lr..." -> "exp"
+        pattern = r"(.+?)_step\d+"
+    match = re.match(pattern, run_name)
+    if match:
+        return match.group(1)
+    # Runs without _step: strip from the norm mode + lr suffix onwards
+    # e.g. "model_dataset_lr0.001_ptmean" -> "model"
+    match = re.match(r"(.+?)_(dataset|pre_trained|df)_lr", run_name)
+    if match:
+        return match.group(1)
+    raise ValueError(f"unexpected run name {run_name}")
 
 
 def get_run_groups(
