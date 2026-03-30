@@ -3,6 +3,7 @@
 import argparse
 import csv
 import json
+import re
 from collections import defaultdict
 
 import numpy as np
@@ -29,9 +30,20 @@ PARTITIONS = [
 ]
 
 
-def get_run_group_name(run_name: str) -> str:
-    """Extracts the group name from a run name, e.g., 'my_experiment_step_100' -> 'my_experiment'."""
-    # just split on _step and take the first part
+def get_run_group_name(run_name: str, keep_steps_separate: bool = False) -> str:
+    """Extracts the group name from a run name.
+
+    Default: 'exp_step300000_dataset_lr0.001_ptmean' -> 'exp'
+    keep_steps_separate: 'exp_step300000_dataset_lr0.001_ptmean' -> 'exp_step300000'
+    """
+    if keep_steps_separate:
+        # Include the step number in the group name, strip the hyperparams after it
+        match = re.match(r"(.+_step\d+)", run_name)
+        if match:
+            return match.group(1)
+        # Fall through to default behavior for runs without _step
+
+    # Strip everything from _step onwards (including the step number)
     if "_step" in run_name:
         return run_name.split("_step")[0]
     elif "_dataset" in run_name:
@@ -46,6 +58,7 @@ def get_run_groups(
     project_name: str,
     run_prefix: str | None = None,
     group_baseline_model_and_size: bool = False,
+    keep_steps_separate: bool = False,
 ) -> dict[str, dict[str, float]]:
     """Get the maximum value for each metric grouped by run prefix before '_step'.
 
@@ -53,6 +66,8 @@ def get_run_groups(
         project_name: the W&B project for the run.
         run_prefix: optional prefix to filter runs. If None, processes all runs.
         group_baseline_model_and_size: if True, group by baseline model name and model size key instead of run prefix before '_step'.
+        keep_steps_separate: if True, keep runs with different steps as separate groups
+            instead of collapsing them by prefix.
 
     Returns:
         a dictionary mapping from group name to a dict of metric name to max value.
@@ -61,7 +76,9 @@ def get_run_groups(
     wandb_path = f"{WANDB_ENTITY}/{project_name}"
 
     if not group_baseline_model_and_size:
-        grouped_runs = group_runs_by_run_prefix_and_step(api, wandb_path, run_prefix)
+        grouped_runs = group_runs_by_run_prefix_and_step(
+            api, wandb_path, run_prefix, keep_steps_separate
+        )
     else:
         grouped_runs = group_runs_by_baseline_model_and_size(api, wandb_path)
 
@@ -73,7 +90,10 @@ def get_run_groups(
 
 
 def group_runs_by_run_prefix_and_step(
-    api: wandb.Api, wandb_path: str, run_prefix: str | None = None
+    api: wandb.Api,
+    wandb_path: str,
+    run_prefix: str | None = None,
+    keep_steps_separate: bool = False,
 ) -> dict[str, list[wandb.Run]]:
     """Group runs by their prefix before "_step".
 
@@ -81,6 +101,8 @@ def group_runs_by_run_prefix_and_step(
         api: the W&B API object.
         wandb_path: the W&B path for the run.
         run_prefix: optional prefix to filter runs. If None, processes all runs.
+        keep_steps_separate: if True, use the full run name as the group key
+            instead of stripping the step suffix.
 
     Returns:
         a dictionary mapping from group name to a list of wandb.Run objects.
@@ -89,9 +111,7 @@ def group_runs_by_run_prefix_and_step(
     for run in api.runs(wandb_path, lazy=False):
         if run_prefix and not run.name.startswith(run_prefix):
             continue
-        group_name = get_run_group_name(
-            run.name
-        )  # if "step" in run.name else run_prefix
+        group_name = get_run_group_name(run.name, keep_steps_separate)
         grouped_runs[group_name].append(run)
         print(f"Found run {run.name} ({run.id}) -> group: {group_name}")
     return grouped_runs
@@ -487,6 +507,11 @@ if __name__ == "__main__":
         help="Report test metrics based on the configuration of the validation results witht the highest score",
     )
     parser.add_argument(
+        "--keep-steps-separate",
+        action="store_true",
+        help="Keep runs with different steps as separate groups instead of collapsing them by prefix before '_step'.",
+    )
+    parser.add_argument(
         "--json_filename",
         type=str,
         default=None,
@@ -547,7 +572,10 @@ if __name__ == "__main__":
     else:
         print(f"Running with the following arguments: {args}")
         run_groups = get_run_groups(
-            args.project_name, args.run_prefix, args.group_baseline_model_and_size
+            args.project_name,
+            args.run_prefix,
+            args.group_baseline_model_and_size,
+            args.keep_steps_separate,
         )
         group_metrics, group_test_metrics, group_max_runs_per_metric = (
             get_max_metrics_grouped(run_groups, args.get_test_metrics)
