@@ -265,7 +265,15 @@ class TestSegmentationMetrics:
         result = segmentation_metrics(preds, labels, num_classes=2)
 
         assert isinstance(result, EvalResult)
-        expected_keys = {"miou", "overall_acc", "macro_acc", "macro_f1", "micro_f1"}
+        expected_keys = {
+            "miou",
+            "overall_acc",
+            "macro_acc",
+            "macro_f1",
+            "micro_f1",
+            "f1_class_0",
+            "f1_class_1",
+        }
         assert set(result.metrics.keys()) == expected_keys
 
         for key in expected_keys:
