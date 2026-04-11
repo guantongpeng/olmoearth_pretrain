@@ -323,7 +323,6 @@ EVAL_TASKS = {
         input_modalities=[Modality.SENTINEL2_L2A.name],
         epochs=50,
         eval_mode=EvalMode.LINEAR_PROBE,
-        primary_metric=EvalMetric.ACCURACY,
     ),
     "forest_loss_driver": DownstreamTaskConfig(
         dataset="forest_loss_driver",
