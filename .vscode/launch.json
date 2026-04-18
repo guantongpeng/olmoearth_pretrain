@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Nano Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "torch.distributed.run",
+            "args": [
+                "--nproc_per_node=1",
+                "scripts/official/nano.py",
+                "train",
+                "my_debug_run",
+                "local",
+                "--dataset.h5py_dir=/home/guantp/pro/olmoearth_pretrain/dataset/3996",
+                "--train_module.rank_microbatch_size=1",
+                "--data_loader.global_batch_size=1",
+                "--data_loader.num_workers=0",
+                "--data_loader.prefetch_factor=1",
+                "--trainer.callbacks.wandb.enabled=False",
+                "--train_module.dp_config.param_dtype=float16",
+                "--train_module.compile_model=False"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
