@@ -13,6 +13,7 @@
 """
 
 """Speed monitor callback for the trainer for OlmoEarth Pretrain."""
+import logging
 import time
 from typing import Any
 

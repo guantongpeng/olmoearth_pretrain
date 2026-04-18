@@ -1,12 +1,9 @@
 """Trying to prototype fitting everything into olmo core."""
 
 import warnings
-
+import logging
 # Suppress all noisy third-party warnings before any other imports
 warnings.filterwarnings("ignore")
-
-import logging
-
 # Suppress noisy third-party loggers
 logging.getLogger("albumentations").setLevel(logging.CRITICAL)
 
