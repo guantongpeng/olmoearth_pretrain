@@ -1,4 +1,18 @@
-"""GeoBench datasets, returning data in the OlmoEarth Pretrain format."""
+"""GeoBench 评估数据集模块，返回 OlmoEarth Pretrain 格式的数据。
+
+本模块封装了 GeoBench 基准测试中的数据集（m-eurosat, m-bigearthnet, m-so2sat 等），
+将数据转换为 OlmoEarth 的 MaskedOlmoEarthSample 格式。
+
+支持的数据模态：
+- Sentinel-2 L2A: 13 波段光学数据
+- Landsat-8: 11 波段光学数据（支持波段插补）
+
+特殊处理：
+- Landsat 的波段映射：B8 (全色) 映射为 B3 (绿)，因为 GeoBench 不含全色波段
+- SO2Sat 数据需要乘以 10000 的缩放因子
+- 支持使用预训练归一化统计量或数据集自带统计量
+- 可选的样本可视化功能
+"""
 
 import logging
 import os

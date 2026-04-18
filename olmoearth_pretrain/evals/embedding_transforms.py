@@ -1,52 +1,69 @@
-"""Post-extraction transforms for embeddings (quantization, dim reduction)."""
+"""嵌入后处理变换模块（量化和降维）。
+
+本模块提供嵌入提取后的变换操作：
+
+1. 量化 (Quantization):
+   - quantize_embeddings: 将浮点嵌入量化为 int8，使用幂次变换保持非均匀分布信息
+   - dequantize_embeddings: 将 int8 嵌入反量化回浮点型
+   量化方案与 AlphaEarth 一致，使用幂次变换 (power=2.0) 和缩放因子 (scale=127.5)
+
+2. 降维 (Dimensionality Reduction):
+   - reduce_embedding_dim: 通过 PCA 降低嵌入维度，支持空间维度 (N,H,W,C)
+"""
 
 import torch
 from sklearn.decomposition import PCA
 
-# === Quantization ===
-# Constants matching AlphaEarth's scheme
-QUANTIZE_POWER = 2.0
-QUANTIZE_SCALE = 127.5
+# === 量化参数 ===
+# 与 AlphaEarth 的量化方案保持一致
+QUANTIZE_POWER = 2.0    # 幂次变换的指数，用于在量化前压缩数值范围
+QUANTIZE_SCALE = 127.5  # int8 范围缩放因子 (255/2)
 
 
 def quantize_embeddings(embeddings: torch.Tensor) -> torch.Tensor:
-    """Quantize float embeddings to int8 using power-based scheme.
+    """将浮点嵌入量化为 int8，使用幂次变换方案。
 
-    This applies a sqrt transform before scaling to preserve information
-    for non-uniform embedding distributions.
+    量化步骤：
+    1. 应用幂次变换: sat = |x|^(1/power) * sign(x)，保留符号，压缩数值范围
+    2. 缩放到 int8 范围 [-127, 127]
+    3. 四舍五入并转换为 int8
+
+    这种幂次变换可以在非均匀嵌入分布下更好地保留信息。
 
     Args:
-        embeddings: Float tensor of shape (N, dim) or (N, H, W, dim)
+        embeddings: 浮点张量，形状 (N, dim) 或 (N, H, W, dim)
 
     Returns:
-        Int8 tensor of same shape
+        int8 张量，形状与输入相同
     """
-    # Apply sqrt, preserve sign: sat = |x|^(1/power) * sign(x)
+    # 幂次变换：保留符号，压缩数值范围
     sat = embeddings.abs().pow(1.0 / QUANTIZE_POWER) * embeddings.sign()
-    # Scale to int8 range and quantize
+    # 缩放并量化到 int8 范围
     quantized = (sat * QUANTIZE_SCALE).clamp(-127, 127).round().to(torch.int8)
     return quantized
 
 
 def dequantize_embeddings(quantized: torch.Tensor) -> torch.Tensor:
-    """Dequantize int8 embeddings back to float32.
+    """将 int8 嵌入反量化回 float32，是量化操作的逆过程。
 
-    This reverses the power-based quantization scheme.
+    反量化步骤：
+    1. 从 int8 范围重新缩放
+    2. 应用逆幂次变换: x = |rescaled|^power * sign(rescaled)
 
     Args:
-        quantized: Int8 tensor of shape (N, dim) or (N, H, W, dim)
+        quantized: int8 张量，形状 (N, dim) 或 (N, H, W, dim)
 
     Returns:
-        Float32 tensor of same shape
+        float32 张量，形状与输入相同
     """
-    # Rescale from int8 range
+    # 从 int8 范围重新缩放
     rescaled = quantized.float() / QUANTIZE_SCALE
-    # Apply square, preserve sign: x = |rescaled|^power * sign(rescaled)
+    # 逆幂次变换：保留符号，恢复原始数值范围
     dequantized = rescaled.abs().pow(QUANTIZE_POWER) * rescaled.sign()
     return dequantized
 
 
-# === Dimensionality Reduction ===
+# === 降维 ===
 
 
 def reduce_embedding_dim(
@@ -55,21 +72,23 @@ def reduce_embedding_dim(
     test_embeddings: torch.Tensor | None,
     target_dim: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, float]:
-    """Reduce embedding dimensionality via PCA.
+    """通过 PCA 降低嵌入维度。
 
-    Fits PCA on train embeddings and applies the same transform to val/test.
-    Handles spatial dimensions (N, H, W, C) by flattening before PCA and
-    reshaping after.
+    在训练嵌入上拟合 PCA，然后将相同变换应用到验证/测试嵌入。
+    支持空间维度 (N, H, W, C)：先展平再 PCA，之后重塑回原始形状。
 
     Args:
-        train_embeddings: Training embeddings, shape (N, dim) or (N, H, W, dim)
-        val_embeddings: Validation embeddings, same shape structure as train
-        test_embeddings: Test embeddings (optional), same shape structure as train
-        target_dim: Target dimensionality after PCA
+        train_embeddings: 训练嵌入，形状 (N, dim) 或 (N, H, W, dim)
+        val_embeddings: 验证嵌入，形状与训练嵌入结构相同
+        test_embeddings: 测试嵌入（可选），形状与训练嵌入结构相同
+        target_dim: PCA 后的目标维度
 
     Returns:
-        Tuple of (train_reduced, val_reduced, test_reduced, variance_retained)
-        where variance_retained is the sum of explained variance ratios.
+        tuple: (train_reduced, val_reduced, test_reduced, variance_retained)
+            - train_reduced: 降维后的训练嵌入
+            - val_reduced: 降维后的验证嵌入
+            - test_reduced: 降维后的测试嵌入（可能为 None）
+            - variance_retained: 保留的方差比例（解释方差比之和）
     """
     original_dim = train_embeddings.shape[-1]
     train_shape = train_embeddings.shape

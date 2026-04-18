@@ -1,4 +1,8 @@
-"""Constants for downloading dinov3 models from torch hub."""
+"""DINOv3 模型下载常量。
+
+定义从 torch hub 下载 DINOv3 模型所需的常量，
+包括模型尺寸枚举和对应的 hub 路径。
+"""
 
 import os
 from enum import StrEnum

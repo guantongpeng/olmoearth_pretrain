@@ -1,4 +1,16 @@
-"""Useful constants for evals."""
+"""评估数据集共享常量。
+
+本模块定义了评估数据集中使用的波段名称和波段索引映射，
+用于在不同数据格式（OlmoEarth 内部 vs 评估数据集原始格式）之间进行转换。
+
+主要常量：
+- EVAL_S2_BAND_NAMES: Sentinel-2 L1C 全部 13 个波段名称
+- EVAL_S2_L2A_BAND_NAMES: Sentinel-2 L2A 12 个波段名称（排除 B10 卷云波段）
+- EVAL_S1_BAND_NAMES: Sentinel-1 波段名称 (vv, vh)
+- EVAL_L8_BAND_NAMES: Landsat-8 波段名称 (B1-B11)
+- EVAL_SRTM_BAND_NAMES: SRTM 高程数据波段名称
+- EVAL_TO_OLMOEARTH_*_BANDS: 从评估数据集波段索引到 OlmoEarth 内部波段顺序的映射
+"""
 
 from olmoearth_pretrain.data.constants import Modality
 

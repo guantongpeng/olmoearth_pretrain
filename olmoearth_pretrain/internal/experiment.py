@@ -1,4 +1,21 @@
-"""Code for configuring and running OlmoEarth Pretrain experiments."""
+"""OlmoEarth Pretrain 实验配置和运行模块。
+
+本模块提供实验的配置、启动和评估功能，包括：
+    - 实验配置数据类（OlmoEarthEvaluateConfig 等）
+    - 子命令定义（evaluate, launch_evaluate, dry_run_evaluate）
+    - Beaker 集群上的实验启动
+    - 通用组件构建（CommonComponents）
+
+使用场景:
+    1. 配置实验参数并构建评估配置
+    2. 在本地或 Beaker 集群上启动评估
+    3. 管理训练检查点和模型加载
+"""
+
+import warnings
+
+# Suppress all noisy third-party warnings before any other imports
+warnings.filterwarnings("ignore")
 
 import logging
 import sys

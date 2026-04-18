@@ -1,4 +1,13 @@
-"""Attention Components for OlmoEarth Pretrain."""
+"""OlmoEarth Pretrain 的注意力组件模块。
+
+本模块包含 Transformer 架构中的核心组件：
+- dispatch_flash_attn: Flash Attention 调度函数（支持变长序列）
+- Attention: 多头注意力模块（支持自注意力和交叉注意力）
+- Mlp: 前馈网络（MLP）模块
+- LayerScale: 可学习的层缩放（用于深层 ViT 的稳定训练）
+- DropPath: 随机深度（Stochastic Depth）正则化
+- Block: 完整的 Transformer 块（注意力 + MLP + 残差连接）
+"""
 
 from logging import getLogger
 from typing import Any
@@ -18,7 +27,7 @@ except ImportError:
 logger = getLogger(__name__)
 
 
-@torch._dynamo.disable()
+@torch._dynamo.disable()  # 禁用 torch.compile 以避免与 flash attention 的兼容问题
 def dispatch_flash_attn(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -34,9 +43,30 @@ def dispatch_flash_attn(
     softmax_scale: float | None = None,
     causal: bool = False,
 ) -> torch.Tensor:
-    """Dispatch flash attention.
+    """调度 Flash Attention 计算。
 
-    Modeled after olmo core but doesnt flatten internally
+    根据输入是否包含变长序列信息（cu_seqlens），自动选择使用
+    flash_attn_varlen_func（变长序列）或 flash_attn_func（定长序列）。
+
+    Args:
+        q: 查询张量，形状为 [B, N, H, D] 或 [total_tokens, H, D]（变长时）
+        k: 键张量
+        v: 值张量
+        cu_seqlens: 累积序列长度（用于变长 flash attention）
+        cu_seqlens_q: 查询的累积序列长度（交叉注意力时使用）
+        cu_seqlens_k: 键的累积序列长度（交叉注意力时使用）
+        max_seqlen: 最大序列长度
+        max_seqlen_q: 查询的最大序列长度
+        max_seqlen_k: 键的最大序列长度
+        dropout_p: 注意力 dropout 概率
+        softmax_scale: softmax 缩放因子（默认为 1/sqrt(d)）
+        causal: 是否使用因果注意力掩码
+
+    Returns:
+        注意力输出张量
+
+    Raises:
+        RuntimeError: 当 flash_attn 未安装时
     """
     if flash_attn is None:
         raise RuntimeError("flash-attn is required!")
@@ -54,10 +84,10 @@ def dispatch_flash_attn(
 
     varlen = all(
         x is not None for x in (cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k)
-    )
+    )  # 判断是否为变长序列模式
 
     if varlen:
-        assert q.ndim == 3, "q must be pre-packed"
+        assert q.ndim == 3, "q must be pre-packed"  # 变长模式下 q 必须是预打包的
         logger.debug("using varlen")
 
         return flash_attn.flash_attn_varlen_func(
@@ -84,17 +114,24 @@ def dispatch_flash_attn(
 
 
 class Attention(nn.Module):
-    """Multi-head attention module with optional cross-attention support.
+    """多头注意力模块，支持自注意力和交叉注意力。
 
-    Args:
-        dim: Input dimension
-        num_heads: Number of attention heads. Defaults to 8.
-        qkv_bias: Enable bias for QKV projections. Defaults to False.
-        qk_norm: Apply normalization to Q and K. Defaults to False.
-        attn_drop: Attention dropout rate. Defaults to 0.0.
-        proj_drop: Output projection dropout rate. Defaults to 0.0.
-        norm_layer: Normalization layer. Defaults to nn.LayerNorm.
-        cross_attn: Enable cross-attention. Defaults to False.
+    该模块实现了标准的多头注意力机制，支持以下三种计算后端：
+    1. Flash Attention（使用 flash_attn 库，最高效）
+    2. PyTorch SDPA（scaled_dot_product_attention，次高效）
+    3. 手动实现（兼容旧版 PyTorch）
+
+    关键属性：
+        num_heads: 注意力头数
+        head_dim: 每个头的维度（dim / num_heads）
+        scale: 注意力缩放因子（1 / sqrt(head_dim)）
+        q, k, v: 查询、键、值的线性投影层
+        q_norm, k_norm: QK 归一化层（可选，用于稳定训练）
+        proj: 输出投影层
+
+    使用场景：
+        - 编码器中的自注意力（y=None）
+        - 解码器中的交叉注意力（y=encoder_output）
     """
 
     fast_attn: Final[bool]
@@ -111,31 +148,31 @@ class Attention(nn.Module):
         cross_attn: bool = False,
         use_flash_attn: bool = False,
     ) -> None:
-        """Initialize the attention module.
+        """初始化注意力模块。
 
         Args:
-            dim: Input dimension
-            num_heads: Number of attention heads
-            qkv_bias: Enable bias for QKV projections
-            qk_norm: Apply normalization to Q and K
-            attn_drop: Attention dropout rate
-            proj_drop: Output projection dropout rate
-            norm_layer: Normalization layer
-            cross_attn: Enable cross-attention
-            use_flash_attn: Use flash attention
+            dim: 输入维度
+            num_heads: 注意力头数
+            qkv_bias: QKV 投影是否使用偏置
+            qk_norm: 是否对 Q 和 K 应用归一化（QK-Norm，提升训练稳定性）
+            attn_drop: 注意力权重 dropout 概率
+            proj_drop: 输出投影 dropout 概率
+            norm_layer: 归一化层类型
+            cross_attn: 是否启用交叉注意力
+            use_flash_attn: 是否使用 Flash Attention（需要 flash-attn 库）
         """
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim**-0.5
+        self.head_dim = dim // num_heads  # 每个头的维度
+        self.scale = self.head_dim**-0.5  # 缩放因子 1/sqrt(d_k)
 
         self.cross_attn = cross_attn
         self.use_flash_attn = use_flash_attn
-        self.fast_attn = hasattr(torch.nn.functional, "scaled_dot_product_attention")
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        self.fast_attn = hasattr(torch.nn.functional, "scaled_dot_product_attention")  # 检测 PyTorch SDPA 是否可用
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)  # 查询投影
+        self.k = nn.Linear(dim, dim, bias=qkv_bias)  # 键投影
+        self.v = nn.Linear(dim, dim, bias=qkv_bias)  # 值投影
 
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
@@ -157,25 +194,31 @@ class Attention(nn.Module):
         max_seqlen_k: int | None = None,
         attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Compute scaled dot product attention.
+        """计算缩放点积注意力（Scaled Dot-Product Attention）。
+
+        根据配置自动选择最高效的计算后端：
+        1. Flash Attention（使用 flash_attn 库，支持变长序列）
+        2. PyTorch SDPA（使用 F.scaled_dot_product_attention）
+        3. 手动实现（兼容旧版 PyTorch，不支持 attn_mask）
 
         Args:
-            q: Query tensor of shape (B, H, N, D)
-            k: Key tensor of shape (B, H, N, D)
-            v: Value tensor of shape (B, H, N, D)
-            n: Number of tokens
-            attn_mask: Attention mask. Defaults to None.
-            cu_seqlens: Optional cumulative sequence lengths for the input tensor needed for varlen flash attention
-            cu_seqlens_q: Optional cumulative sequence lengths for the query tensor, needed for cross varlen flash attention
-            cu_seqlens_k: Optional cumulative sequence lengths for the key tensor, needed for cross varlen flash attention
-            max_seqlen: Optional maximum sequence length for the input tensor, needed for varlen flash attention
-            max_seqlen_q: Optional maximum sequence length for the query tensor, needed for cross varlen flash attention
-            max_seqlen_k: Optional maximum sequence length for the key tensor, needed for cross varlen flash attention
+            q: 查询张量，形状 (B, H, N, D) 或变长格式
+            k: 键张量，形状 (B, H, N, D) 或变长格式
+            v: 值张量，形状 (B,; H, N, D) 或变长格式
+            n: token 数量（用于构建注意力掩码）
+            cu_seqlens: 变长 flash attention 的累积序列长度
+            cu_seqlens_q: 交叉注意力中查询的累积序列长度
+            cu_seqlens_k: 交叉注意力中键的累积序列长度
+            max_seqlen: 变长序列的最大长度
+            max_seqlen_q: 查询的最大序列长度
+            max_seqlen_k: 键的最大序列长度
+            attn_mask: 注意力掩码
 
         Returns:
-            Output tensor of shape (B, H, N, D)
+            注意力输出张量，形状 (B, H, N, D)
         """
         if self.use_flash_attn:
+            # 使用 Flash Attention（最高效，支持变长序列）
             x = dispatch_flash_attn(
                 q,
                 k,
@@ -190,29 +233,30 @@ class Attention(nn.Module):
                 softmax_scale=self.scale,
                 causal=False,
             )
-            # Output is (B, Nq, H, D), transpose back to (B, H, Nq, D)
-            # matching the transpose of the other attention implementations that need to be transposed back
+            # Flash Attention 输出形状为 (B, Nq, H, D)，需要转置回 (B, H, Nq, D)
+            # 以匹配其他注意力实现的输出格式
             x = x.transpose(1, 2)
         elif self.fast_attn:
+            # 使用 PyTorch SDPA（次高效）
             if attn_mask is not None:
-                attn_mask = attn_mask[:, None, None].repeat((1, self.num_heads, n, 1))
+                attn_mask = attn_mask[:, None, None].repeat((1, self.num_heads, n, 1))  # 将掩码扩展到所有头
             x = F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
-                # a value of True indicates that the element should take part in attention
+                # True 表示该位置参与注意力计算
                 attn_mask=attn_mask,
                 dropout_p=self.attn_drop.p,
             )
         else:
-            # Backward Compatible for older PyTorch versions
+            # 手动实现（兼容旧版 PyTorch）
             if attn_mask is not None:
                 raise NotImplementedError
-            q = q * self.scale
-            attn = q @ k.transpose(-2, -1)
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-            x = attn @ v
+            q = q * self.scale  # 缩放查询
+            attn = q @ k.transpose(-2, -1)  # 计算注意力分数
+            attn = attn.softmax(dim=-1)  # softmax 归一化
+            attn = self.attn_drop(attn)  # 应用 dropout
+            x = attn @ v  # 加权求和
 
         return x
 
@@ -228,46 +272,55 @@ class Attention(nn.Module):
         max_seqlen_k: int | None = None,
         attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Forward pass.
+        """注意力模块前向传播。
+
+        核心流程：
+        1. 对输入 x 投影得到 Q；对 x 或 y 投影得到 K, V
+        2. 将 Q, K, V 重排为多头格式
+        3. 可选：对 Q, K 应用归一化
+        4. 计算缩放点积注意力
+        5. 输出投影 + dropout
 
         Args:
-            x: Input tensor of shape (B, N, C) or (B* N , C) if packed
-            y: Second input for cross-attention. Defaults to None.
-            attn_mask: Attention mask. Defaults to None.
-            cu_seqlens: Optional cumulative sequence lengths for the input tensor needed for varlen flash attention
-            cu_seqlens_q: Optional cumulative sequence lengths for the query tensor, needed for cross varlen flash attention
-            cu_seqlens_k: Optional cumulative sequence lengths for the key tensor, needed for cross varlen flash attention
-            max_seqlen: Optional maximum sequence length for the input tensor, needed for varlen flash attention
-            max_seqlen_q: Optional maximum sequence length for the query tensor, needed for cross varlen flash attention
-            max_seqlen_k: Optional maximum sequence length for the key tensor, needed for cross varlen flash attention
+            x: 输入张量，形状 (B, N, C)；若为打包格式则为 (B*N, C)
+            y: 交叉注意力的第二输入（编码器输出）；自注意力时为 None
+            cu_seqlens: 变长 flash attention 的累积序列长度
+            cu_seqlens_q: 交叉注意力中查询的累积序列长度
+            cu_seqlens_k: 交叉注意力中键的累积序列长度
+            max_seqlen: 变长序列的最大长度
+            max_seqlen_q: 查询的最大序列长度
+            max_seqlen_k: 键的最大序列长度
+            attn_mask: 注意力掩码
 
         Returns:
-            Output tensor of shape (B, N, C) or (B* N , C) if packed
+            输出张量，形状与输入 x 相同
         """
         original_shape = x.shape
 
-        q = self.q(x)
+        q = self.q(x)  # 查询投影
 
         if y is None:
-            assert not self.cross_attn
-            k = self.k(x)
-            v = self.v(x)
+            assert not self.cross_attn  # 自注意力模式不应提供 y
+            k = self.k(x)  # 键投影（自注意力：从同一输入）
+            v = self.v(x)  # 值投影
         else:
-            assert self.cross_attn
-            k = self.k(y)
-            v = self.v(y)
+            assert self.cross_attn  # 交叉注意力模式必须提供 y
+            k = self.k(y)  # 键投影（交叉注意力：从编码器输出）
+            v = self.v(y)  # 值投影
         if not self.use_flash_attn:
+            # 非 Flash Attention 模式：重排为 (B, H, N, D) 格式
             q = rearrange(q, "b n (h d) -> b h n d", h=self.num_heads)
             k = rearrange(k, "b n (h d) -> b h n d", h=self.num_heads)
             v = rearrange(v, "b n (h d) -> b h n d", h=self.num_heads)
         else:
+            # Flash Attention 模式：重排为 (B*N, H, D) 打包格式
             q = rearrange(q, "bn (h d) -> bn h d", h=self.num_heads)
-            # Flash attention only supports k v heads that divide the number of query heads
+            # Flash attention 仅支持 KV 头数整除查询头数
             k = rearrange(k, "bn (h d) -> bn h d", h=self.num_heads)
             v = rearrange(v, "bn (h d) -> bn h d", h=self.num_heads)
         # logger.info(f"q shape: {q.shape} k shape: {k.shape} v shape: {v.shape}")
 
-        q, k = self.q_norm(q), self.k_norm(k)
+        q, k = self.q_norm(q), self.k_norm(k)  # 可选的 QK 归一化
         x = self.sdpa(
             q,
             k,
@@ -283,22 +336,25 @@ class Attention(nn.Module):
             max_seqlen_k=max_seqlen_k,
             attn_mask=attn_mask,
         )
-        x = x.transpose(1, 2).reshape(original_shape)
-        x = self.proj(x)
-        x = self.proj_drop(x)
+        x = x.transpose(1, 2).reshape(original_shape)  # 将多头输出合并回原始形状
+        x = self.proj(x)  # 输出投影
+        x = self.proj_drop(x)  # 输出 dropout
         return x
 
 
 class Mlp(nn.Module):
-    """MLP module used in Vision Transformer, MLP-Mixer and related networks.
+    """MLP（前馈网络）模块，用于 Vision Transformer 和相关网络。
+
+    标准的两层 MLP 结构：Linear → Activation → Dropout → Linear → Dropout。
+    隐藏维度通常为输入维度的 4 倍（由 mlp_ratio 控制）。
 
     Args:
-        in_features: Number of input features
-        hidden_features: Hidden dimension. Defaults to None.
-        out_features: Output dimension. Defaults to None.
-        act_layer: Activation layer. Defaults to nn.GELU.
-        bias: Enable bias in linear layers. Defaults to True.
-        drop: Dropout rate. Defaults to 0.0.
+        in_features: 输入特征维度
+        hidden_features: 隐藏层维度（默认等于 in_features）
+        out_features: 输出特征维度（默认等于 in_features）
+        act_layer: 激活函数类型（默认 GELU）
+        bias: 线性层是否使用偏置
+        drop: Dropout 概率
     """
 
     def __init__(
@@ -348,12 +404,18 @@ class Mlp(nn.Module):
 
 
 class LayerScale(nn.Module):
-    """Learnable scaling layer.
+    """可学习的层缩放（LayerScale）。
+
+    对输入进行逐元素缩放，缩放因子为可学习参数。
+    初始值通常设为很小的数（如 1e-5），使深层网络在训练初期
+    接近恒等映射，有助于稳定深层 Transformer 的训练。
+
+    参考：Scaling Vision Transformers to 22 billion parameters (https://arxiv.org/abs/2302.02318)
 
     Args:
-        dim: Input dimension
-        init_values: Initial scaling value. Defaults to 1e-5.
-        inplace: Perform scaling operation in-place. Defaults to False.
+        dim: 输入维度（缩放参数的数量）
+        init_values: 缩放参数的初始值（默认 1e-5）
+        inplace: 是否原地执行缩放操作（节省内存）
     """
 
     def __init__(
@@ -383,15 +445,18 @@ class LayerScale(nn.Module):
 
 
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample when applied in main path of residual blocks.
+    """随机深度（Stochastic Depth）模块，在残差块的主路径中随机丢弃整条路径。
 
-    This is a regularization technique that randomly drops entire layers/paths during training
-    to prevent overfitting. During inference, all paths are kept.
+    这是一种正则化技术，在训练时以一定概率将整个残差分支置零
+    （相当于跳过该层），防止过拟合。推理时所有路径都保留。
+
+    效果等同于 Dropout，但作用于整个残差路径而非单个神经元。
+    被丢弃时，输出为 x / keep_prob（保持期望值不变）。
 
     Args:
-        drop_prob: Probability of dropping the path. Defaults to None.
+        drop_prob: 丢弃路径的概率
 
-    References:
+    参考：
         Deep Networks with Stochastic Depth (https://arxiv.org/abs/1603.09382)
     """
 
@@ -417,28 +482,40 @@ class DropPath(nn.Module):
             return x
 
         keep_prob = 1 - self.drop_prob
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # (B, 1, 1, ...)
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # (B, 1, 1, ...) — 只在样本维度随机
         random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-        random_tensor.floor_()  # binarize
-        return x.div(keep_prob) * random_tensor
+        random_tensor.floor_()  # 二值化：0（丢弃）或 1（保留）
+        return x.div(keep_prob) * random_tensor  # 缩放以保持期望值不变
 
 
 class Block(nn.Module):
-    """Transformer block with self/cross attention and MLP.
+    """Transformer 块，包含自/交叉注意力和 MLP。
+
+    标准的 Transformer 编码器块结构：
+        x = x + DropPath(LayerScale(Attention(LayerNorm(x))))
+        x = x + DropPath(LayerScale(MLP(LayerNorm(x))))
+
+    支持：
+    - 自注意力和交叉注意力
+    - LayerScale（可学习的层缩放）
+    - DropPath（随机深度正则化）
+    - QK 归一化
+    - Flash Attention
 
     Args:
-        dim: Input dimension
-        num_heads: Number of attention heads
-        mlp_ratio: Ratio of mlp hidden dim to input dim. Default: 4.0
-        qkv_bias: Add bias to qkv projections. Default: False
-        qk_norm: Apply normalization to q,k. Default: False
-        drop: Dropout rate. Default: 0.0
-        attn_drop: Attention dropout rate. Default: 0.0
-        drop_path: Drop path rate. Default: 0.0
-        init_values: Layer scale initialization value. Default: None
-        act_layer: Activation layer. Default: nn.GELU
-        norm_layer: Normalization layer. Default: nn.LayerNorm
-        cross_attn: Whether to use cross attention. Default: False
+        dim: 输入维度
+        num_heads: 注意力头数
+        mlp_ratio: MLP 隐藏维度与输入维度的比率（默认 4.0）
+        qkv_bias: QKV 投影是否使用偏置
+        qk_norm: 是否对 Q, K 应用归一化
+        drop: Dropout 概率
+        attn_drop: 注意力 dropout 概率
+        drop_path: 随机深度丢弃概率
+        init_values: LayerScale 初始值（None 表示不使用）
+        act_layer: 激活函数类型
+        norm_layer: 归一化层类型
+        cross_attn: 是否启用交叉注意力
+        use_flash_attn: 是否使用 Flash Attention
     """
 
     def __init__(

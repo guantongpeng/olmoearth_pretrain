@@ -1,4 +1,24 @@
-"""Train and evaluate a linear probe."""
+"""线性探针评估模块：训练和评估线性探针。
+
+本模块实现了在冻结的模型嵌入上训练线性分类器/分割头，
+用于评估预训练模型的下游任务迁移能力。
+
+主要组件：
+- ProbeType: 探针类型枚举（线性/注意力池化）
+- AttnPoolLinearProbe: 注意力池化线性探针，用于分割任务
+- LinearProbe: 标准线性探针，用于分类任务
+- train_and_eval_probe: 主函数，训练并评估线性探针
+- train_probe: 训练线性探针的核心循环
+- weighted_dice_loss: 加权 Dice 损失，用于分割任务
+- evaluate_probe: 评估已训练的线性探针
+- get_probe_predictions: 获取探针预测结果
+- compute_metric: 根据任务类型计算评估指标
+
+使用场景：
+  1. 先通过 get_embeddings 提取嵌入
+  2. 调用 train_and_eval_probe 训练线性探针并获取评估结果
+  3. 支持 bootstrap 重采样来估计不确定性
+"""
 
 from __future__ import annotations
 

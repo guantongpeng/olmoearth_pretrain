@@ -1,25 +1,30 @@
-"""Evaluate multiple checkpoints from a training run, logging to a single wandb run.
+"""多检查点评估模块，在单个 W&B 运行中记录多个检查点的评估指标。
 
-Each checkpoint's evaluation metrics are logged at its training step,
-so you can visualize eval performance over the course of training.
+每个检查点的评估指标以其训练步数作为 x 轴记录，
+可以在训练过程中可视化评估性能的变化。
 
-Usage via full_eval_sweep.py (recommended):
+推荐使用方式（通过 full_eval_sweep.py）:
     python -m olmoearth_pretrain.internal.full_eval_sweep \
         --checkpoint_dir=/weka/.../checkpoints/henryh/my_run \
         --cluster=ai2/saturn-cirrascale \
         --module_path=scripts/my_train.py
 
-Direct local usage:
+直接本地使用:
     TRAIN_SCRIPT_PATH=scripts/my_train.py \
     CHECKPOINT_DIR=/weka/.../checkpoints/henryh/my_run \
     torchrun olmoearth_pretrain/internal/checkpoint_sweep_evals.py \
         evaluate my_run_sweep local
 
-Beaker launch:
+Beaker 启动:
     TRAIN_SCRIPT_PATH=scripts/my_train.py \
     CHECKPOINT_DIR=/weka/.../checkpoints/henryh/my_run \
     python3 olmoearth_pretrain/internal/checkpoint_sweep_evals.py \
         launch_evaluate my_run_sweep ai2/saturn-cirrascale
+
+主要函数:
+    discover_checkpoints(): 发现检查点目录中的 step{N}/ 子目录
+    evaluate_checkpoints(): 评估所有检查点并记录指标
+    build_trainer_config(): 构建检查点扫描的训练器配置
 """
 
 import gc
@@ -76,7 +81,15 @@ logger = logging.getLogger(__name__)
 def discover_checkpoints(
     checkpoint_dir: str, steps: list[int] | None = None
 ) -> list[tuple[int, str]]:
-    """Find step{N}/ directories in checkpoint_dir, sorted by step number."""
+    """在 checkpoint_dir 中查找 step{N}/ 格式的目录，按步数排序。
+
+    Args:
+        checkpoint_dir: 检查点根目录路径
+        steps: 可选的步数过滤列表，仅返回指定步数的检查点
+
+    Returns:
+        list[tuple[int, str]]: (步数, 目录路径) 元组列表，按步数升序排列
+    """
     step_dirs = []
     for entry in os.listdir(checkpoint_dir):
         match = re.match(r"^step(\d+)$", entry)
@@ -95,21 +108,34 @@ def evaluate_checkpoints(
     checkpoint_dir: str,
     steps: list[int] | None = None,
 ) -> None:
-    """Evaluate all checkpoints in checkpoint_dir, logging to one wandb run."""
-    seed_all(config.init_seed)
+    """评估 checkpoint_dir 中的所有检查点，将指标记录到单个 W&B 运行。
+
+    核心逻辑:
+        1. 发现所有检查点目录
+        2. 构建模型和数据加载器
+        3. 初始化 W&B 回调，设置 checkpoint_step 为 x 轴
+        4. 逐个加载检查点权重并运行评估
+        5. 记录验证/测试指标和嵌入诊断
+
+    Args:
+        config: OlmoEarth 评估配置
+        checkpoint_dir: 检查点根目录路径
+        steps: 可选的步数过滤列表
+    """
+    seed_all(config.init_seed)  # 设置随机种子
 
     checkpoints = discover_checkpoints(checkpoint_dir, steps=steps)
     if not checkpoints:
         raise ValueError(f"No step directories found in {checkpoint_dir}")
     logger.info(f"Found {len(checkpoints)} checkpoints: {[s for s, _ in checkpoints]}")
 
-    # Build model
+    # 构建模型
     model = config.model.build()
     device = get_default_device()
     model = model.to(device)
     data_loader = MockOlmoEarthDataLoader()
 
-    # Build train module if available (needed for proper model architecture init)
+    # 构建训练模块（如果可用，需要正确的模型架构初始化）
     if config.train_module is not None:
         train_module = config.train_module.build(model)
         data_loader.min_patch_size = model.encoder.min_patch_size
@@ -118,7 +144,7 @@ def evaluate_checkpoints(
         train_module = MockLatentMIMTrainModule()
     train_module.model = model
 
-    # Build trainer (wires up callbacks including evaluators and wandb)
+    # 构建训练器（连接回调，包括评估器和 W&B）
     trainer = config.trainer.build(train_module, data_loader)
 
     config_dict = config.as_config_dict()
@@ -126,10 +152,10 @@ def evaluate_checkpoints(
     wandb_callback.config = config_dict
     cast(ConfigSaverCallback, trainer.callbacks["config_saver"]).config = config_dict
 
-    # Init wandb (without running evals or starting the training loop)
+    # 初始化 W&B（不运行评估或启动训练循环）
     wandb_callback.pre_train()
 
-    # Tell wandb to use checkpoint_step as the x-axis for eval metrics
+    # 告诉 W&B 使用 checkpoint_step 作为评估指标的 x 轴
     if wandb_callback.enabled and get_rank() == 0:
         wandb_callback.wandb.define_metric("checkpoint_step")
         wandb_callback.wandb.define_metric("eval/*", step_metric="checkpoint_step")
@@ -139,7 +165,7 @@ def evaluate_checkpoints(
             "eval_embed_diagnostics/*", step_metric="checkpoint_step"
         )
 
-    # Get the evaluator callback (contains the built evaluator objects)
+    # 获取评估回调（包含构建好的评估器对象）
     eval_callback = trainer.callbacks.get("downstream_evaluator")
     if not isinstance(eval_callback, DownstreamEvaluatorCallback):
         raise ValueError("downstream_evaluator callback not found or disabled")
@@ -147,12 +173,12 @@ def evaluate_checkpoints(
     for step_num, step_path in checkpoints:
         logger.info(f"=== Evaluating checkpoint step {step_num}: {step_path} ===")
 
-        # Load model weights from the distributed checkpoint
+        # 从分布式检查点加载模型权重
         train_module_dir = os.path.join(step_path, "model_and_optim")
         load_model_and_optim_state(train_module_dir, model)
         model.to(device)
 
-        # Run all evaluators and collect metrics for this checkpoint
+        # 运行所有评估器并收集此检查点的指标
         metrics: dict[str, float | int] = {"checkpoint_step": step_num}
 
         for evaluator in eval_callback.evaluators:
@@ -199,13 +225,13 @@ def evaluate_checkpoints(
                 f"({eval_time:.1f}s)"
             )
 
-        # Log all metrics for this checkpoint in one call
+        # 在一次调用中记录此检查点的所有指标
         if wandb_callback.enabled and get_rank() == 0:
             wandb_callback.wandb.log(metrics)
             logger.info(f"Logged {len(metrics)} metrics for step {step_num}")
 
-        gc.collect()
-        torch.cuda.empty_cache()
+        gc.collect()  # 显式垃圾回收
+        torch.cuda.empty_cache()  # 清空 CUDA 缓存
 
     if wandb_callback.enabled and get_rank() == 0:
         wandb_callback.wandb.finish()
@@ -213,14 +239,28 @@ def evaluate_checkpoints(
 
 
 def _get_eval_tasks() -> dict:
-    """Select task set based on EMBEDDING_DIAGNOSTICS_ONLY env var."""
+    """根据 EMBEDDING_DIAGNOSTICS_ONLY 环境变量选择任务集。
+
+    Returns:
+        dict: 如果设置了 EMBEDDING_DIAGNOSTICS_ONLY 则返回嵌入诊断任务，否则返回完整评估任务
+    """
     if os.environ.get("EMBEDDING_DIAGNOSTICS_ONLY"):
         return EMBED_DIAG_TASKS
     return EVAL_TASKS
 
 
 def build_trainer_config(common: CommonComponents) -> TrainerConfig:
-    """Build trainer config for checkpoint sweep (no training, no auto-eval)."""
+    """为检查点扫描构建训练器配置（无训练、无自动评估）。
+
+    配置包括: W&B 回调、GPU 内存监控、配置保存、下游评估器、
+    垃圾回收和 Beaker 回调。
+
+    Args:
+        common: 通用组件
+
+    Returns:
+        TrainerConfig: 训练器配置
+    """
     checkpointer_config = CheckpointerConfig(work_dir=common.save_folder)
     wandb_callback = OlmoEarthWandBCallback(
         name=common.run_name,
@@ -258,7 +298,14 @@ def build_trainer_config(common: CommonComponents) -> TrainerConfig:
 
 
 def parse_steps(steps_str: str | None) -> list[int] | None:
-    """Parse a comma-separated string of step numbers (e.g. '5000,10000,15000')."""
+    """解析逗号分隔的步数字符串（如 '5000,10000,15000'）。
+
+    Args:
+        steps_str: 逗号分隔的步数字符串，None 表示不过滤
+
+    Returns:
+        list[int] | None: 步数列表，输入为 None 时返回 None
+    """
     if steps_str is None:
         return None
     return [int(s.strip()) for s in steps_str.split(",") if s.strip()]
@@ -273,7 +320,7 @@ if __name__ == "__main__":
     if module_path is None:
         raise ValueError("TRAIN_SCRIPT_PATH environment variable must be set")
 
-    # Optional: only evaluate specific steps (comma-separated)
+    # 可选：仅评估特定步数（逗号分隔）
     steps = parse_steps(os.environ.get("CHECKPOINT_STEPS"))
 
     user_mod = load_user_module(module_path)

@@ -1,4 +1,8 @@
-"""Post-process ingested WorldCover data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 ESA WorldCover 土地覆盖数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 WorldCover 数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+ESA WorldCover 提供全球 10 米分辨率的土地覆盖分类产品（2020年和2021年版）。
+"""
 
 import argparse
 import csv

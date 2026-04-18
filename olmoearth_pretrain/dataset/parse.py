@@ -1,4 +1,20 @@
-"""Parse the OlmoEarth Pretrain dataset."""
+"""OlmoEarth Pretrain 数据集解析模块。
+
+本模块负责解析 OlmoEarth Pretrain 数据集中的 CSV 元数据文件，
+识别各种模态在哪些瓦片(tiles)位置上有可用数据。
+
+主要类:
+    ModalityImage: 模态图像信息，包含时间范围
+    GridTile: 网格瓦片位置信息，包含 CRS、分辨率因子、行列号
+    ModalityTile: 模态瓦片信息，包含网格位置、图像列表、波段集等
+
+主要函数:
+    parse_modality_csv(): 解析单个模态的 CSV 文件
+    parse_dataset(): 解析整个数据集的所有模态
+
+使用场景:
+    作为数据加载流程的第一步，解析 CSV 元数据以确定数据的位置和可用性。
+"""
 
 import csv
 import logging
@@ -22,18 +38,29 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ModalityImage:
-    """Information about one image contained within a modality tile.
+    """模态图像信息，描述瓦片中堆叠图像时间序列的单个图像。
 
-    The tile contains a stacked image time series. So this is the start and end time of
-    each image in the series.
+    每个瓦片包含堆叠的图像时间序列，此数据类记录序列中
+    每个图像的起始和结束时间。
+
+    关键属性:
+        start_time: 图像的起始时间
+        end_time: 图像的结束时间
     """
 
     start_time: datetime
     end_time: datetime
 
-    # Add this to see if there are two ModalityImage objects that are the same
+    # 添加此方法以检查两个 ModalityImage 对象是否相同
     def __eq__(self, other: object) -> bool:
-        """Check if two ModalityImage objects are the same."""
+        """检查两个 ModalityImage 对象是否相同（起始和结束时间都相等）。
+
+        Args:
+            other: 另一个对象
+
+        Returns:
+            bool: 如果是 ModalityImage 且时间范围相同则返回 True
+        """
         if not isinstance(other, ModalityImage):
             return False
         return self.start_time == other.start_time and self.end_time == other.end_time
@@ -41,22 +68,31 @@ class ModalityImage:
 
 @dataclass(frozen=True)
 class GridTile:
-    """The position of a tile along a grid of a certain resolution."""
+    """网格瓦片位置信息，描述瓦片在特定分辨率网格上的位置。
 
-    # The CRS e.g. EPSG:32610.
-    crs: str
-
-    # The factor at which this tile is stored relative to BASE_RESOLUTION.
-    resolution_factor: int
-
-    # The column and row along the grid defined based on the resolution factor.
-    col: int
-    row: int
+    关键属性:
+        crs: 坐标参考系统，例如 EPSG:32610
+        resolution_factor: 相对于 BASE_RESOLUTION 的分辨率因子
+        col: 基于分辨率因子定义的网格列号
+        row: 基于分辨率因子定义的网格行号
+    """
 
 
 @dataclass
 class ModalityTile:
-    """Information about one tile pertaining to a modality."""
+    """模态瓦片信息，描述某个模态在特定瓦片位置的数据。
+
+    关键属性:
+        grid_tile: 网格瓦片位置信息
+        images: 该瓦片上图像的时间序列列表
+        center_time: 定义瓦片时间范围的中心时间
+        band_sets: 波段集到对应文件路径的映射
+        modality: 模态规格信息
+
+    使用场景:
+        在数据解析阶段由 parse_modality_csv() 创建，
+        在采样阶段用于确定加载哪些数据。
+    """
 
     grid_tile: GridTile
     images: list[ModalityImage]
@@ -70,10 +106,12 @@ class ModalityTile:
     modality: ModalitySpec
 
     def get_flat_bands(self) -> list[str]:
-        """Get the names of the bands as a flat list.
+        """获取所有波段名称的扁平列表。
 
-        This would correspond to the order of the bands in any function that combines
-        the band sets into a single tensor.
+        对应于将波段集合并为单个张量时的波段顺序。
+
+        Returns:
+            list[str]: 所有波段名称的列表，按波段集顺序排列
         """
         bands: list[str] = []
         for band_set in self.band_sets:
@@ -84,19 +122,26 @@ class ModalityTile:
 def parse_modality_csv(
     path: UPath, modality: ModalitySpec, time_span: TimeSpan, csv_path: UPath
 ) -> list[ModalityTile]:
-    """Parse CSV for one modality and time span.
+    """解析单个模态和时间跨度的 CSV 文件。
+
+    核心逻辑:
+        1. 读取 CSV 文件，每行对应一个图像
+        2. 根据 CRS、分辨率因子、行列号构建 GridTile
+        3. 根据起始/结束时间构建 ModalityImage
+        4. 将同一 GridTile 的图像聚合到同一个 ModalityTile
+        5. 填充每个波段的文件路径
 
     Args:
-        path: the OlmoEarth Pretrain dataset path.
-        modality: the modality to parse.
-        time_span: the time span to parse.
-        csv_path: the CSV path.
+        path: OlmoEarth Pretrain 数据集根路径
+        modality: 要解析的模态规格
+        time_span: 要解析的时间跨度
+        csv_path: CSV 文件路径
 
     Returns:
-        list of ModalityTiles.
+        list[ModalityTile]: 解析得到的模态瓦片列表
     """
-    # First get the tiles, and images in each tile.
-    # We fill in the band sets and image paths next.
+    # 首先获取瓦片及其中的图像
+    # 然后填充波段集和图像路径
     modality_tiles: dict[GridTile, ModalityTile] = {}
     with csv_path.open() as f:
         reader = csv.DictReader(f)
@@ -121,21 +166,19 @@ def parse_modality_csv(
                     modality=modality,
                 )
 
-            # This image should appear at the index above. But the indexes should be in
-            # order in the CSV.
+            # 该图像应该出现在上述索引处，但索引应该在 CSV 中按顺序排列
             if image_idx != len(modality_tiles[grid_tile].images):
-                # This should be an error but currently I realized there are one or two
-                # tiles that actually have two timestamps in the original rslearn
-                # dataset, which means the OlmoEarth Pretrain dataset has two sets of entries in
-                # the CSV but there is really only one file.
+                # 这应该是一个错误，但发现原始 rslearn 数据集中
+                # 有一两个瓦片实际有两个时间戳，这意味着 OlmoEarth Pretrain
+                # 数据集在 CSV 中有两行记录，但实际只有一个文件
                 # raise ValueError(
                 #    "expected image index to be in increasing order and contiguous"
                 # )
                 continue
             modality_tiles[grid_tile].images.append(image)
 
-    # Now we can fill in the band sets.
-    # We also double check that there are no None in the image lists.
+    # 现在可以填充波段集
+    # 同时检查图像列表中没有 None 值
     for tile in modality_tiles.values():
         grid_tile = tile.grid_tile
         window_metadata = WindowMetadata(
@@ -162,10 +205,20 @@ def parse_modality_csv(
 def parse_dataset(
     path: UPath, supported_modalities: list[ModalitySpec] = Modality.values()
 ) -> dict[ModalitySpec, dict[TimeSpan, list[ModalityTile]]]:
-    """Parse the various per-modality tiles present in a OlmoEarth Pretrain dataset.
+    """解析 OlmoEarth Pretrain 数据集中各模态的瓦片信息。
+
+    核心逻辑:
+        1. 遍历所有模态（跳过标记为忽略和不支持的模态）
+        2. 根据模态类型确定时间跨度（多时相用 YEAR，静态用 STATIC）
+        3. 对每个时间跨度，解析对应的 CSV 文件获取 ModalityTile 列表
+
+    Args:
+        path: OlmoEarth Pretrain 数据集根路径
+        supported_modalities: 需要支持的模态列表，默认为所有模态
 
     Returns:
-        a mapping from modality -> time span (e.g. yearly / two-week) -> list of tiles.
+        dict[ModalitySpec, dict[TimeSpan, list[ModalityTile]]]:
+            模态 -> 时间跨度 -> 模态瓦片列表的嵌套映射
     """
     tiles: dict[ModalitySpec, dict[TimeSpan, list[ModalityTile]]] = {}
 
@@ -179,17 +232,16 @@ def parse_dataset(
             continue
 
         if modality.is_multitemporal:
-            # We need to load the one-year and two-week data separately.
+            # 需要分别加载年度和双周数据（当前仅使用年度数据）
             time_spans = [TimeSpan.YEAR]  # [TimeSpan.YEAR, TimeSpan.TWO_WEEK]
         else:
-            # Just need to load the static data.
+            # 只需要加载静态数据
             time_spans = [TimeSpan.STATIC]
 
-        # For each possible time span available for this modality, parse the associated
-        # CSV to get the ModalityTiles under that time span.
+        # 对每个可用的时间跨度，解析对应的 CSV 文件以获取 ModalityTile 列表
         tiles[modality] = {}
         for time_span in time_spans:
-            # Reconstruct the CSV filename from the grid resolution, modality, and time span.
+            # 从网格分辨率、模态和时间跨度重建 CSV 文件名
             tile_resolution = modality.get_tile_resolution()
             csv_fname = (
                 path / f"{tile_resolution}_{modality.name}{time_span.get_suffix()}.csv"  # type: ignore

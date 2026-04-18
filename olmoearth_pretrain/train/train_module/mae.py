@@ -1,3 +1,19 @@
+"""
+MAE（掩码自编码器）训练模块。
+
+本模块实现 Masked Autoencoder (MAE) 的训练逻辑，
+是最经典的掩码预训练方法之一。
+
+训练流程：
+1. 对输入数据应用掩码策略，将 token 分为编码/解码两类
+2. 编码器仅处理可见（编码）token
+3. 解码器尝试从编码表示重建被掩码的 token
+4. 使用重建损失（如 SmoothL1Loss）训练模型
+5. 可选的 Latent MIM 损失和正则化损失
+
+参考：MAE 论文 (He et al., 2022) - Masked Autoencoders Are Scalable Vision Learners
+"""
+
 """Training and optimizer abstraction for OlmoEarth Pretrain."""
 
 from dataclasses import dataclass, field
@@ -71,29 +87,21 @@ class MAETrainModuleConfig(OlmoEarthTrainModuleConfig):
 
 
 class MAETrainModule(OlmoEarthTrainModule):
-    """A :class:`TrainModule`.
+    """MAE 训练模块。
 
-    Initialize the training module.
+    实现 Masked Autoencoder 的训练逻辑：
+    - 编码器处理可见 token，解码器重建掩码 token
+    - 主要使用重建损失（MAE loss）
+    - 可选的 Latent MIM 判别损失（使用编码器自身作为目标编码器）
+    - 可选的正则化损失
+    - 支持微批次训练
 
-    Args:
-        model: The transformer model to train.
-        optim: The corresponding optimizer config.
-        masking_config: The masking configuration for the model.
-        loss_config: The loss configuration for the model.
-        rank_microbatch_size: The rank microbatch size in instances.
-        compile_model: Whether to compile to the model.
-        dp_config: Data parallel configuration for the model.
-        loss_fn: Loss function to use.
-        compile_loss: Whether to compile the loss function.
-        autocast_precision: Enable AMP with this data type.
-        max_grad_norm: Clip gradient norms to this value.
-        scheduler: Optional learning rate scheduler.
-        device: The device to train on.
-        state_dict_save_opts: Override state dict options for saving.
-        state_dict_load_opts: Override state dict options for loading.
-        token_exit_cfg: The token exit configuration for the model.
-        regularizer_config: An optional regularizer configuration for the model.
-        find_unused_parameters: Whether to find unused parameters in the model.
+    关键属性:
+        mae_loss: MAE 重建损失函数
+        latent_mim_loss: 可选的 Latent MIM 判别损失
+        masking_strategy: 掩码策略
+        regularizer: 可选的正则化项
+        token_exit_cfg: 各模态的 token 退出层配置
     """
 
     def __init__(

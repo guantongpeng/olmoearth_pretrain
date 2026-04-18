@@ -1,24 +1,20 @@
-"""Studio Dataset Ingestion Module (Internal Use Only).
+"""Studio 数据集摄取模块（仅限内部使用）。
 
-This module provides tooling to ingest datasets from the Studio platform
-into the OlmoEarth evaluation system. It handles:
+本模块提供从 Studio 平台摄取数据集到 OlmoEarth 评估系统的工具。
 
-1. Copying data from GCS to Weka
-2. Computing normalization statistics (via band_stats.py)
-3. Registering datasets in the eval registry
+核心功能：
+1. 从 GCS 复制数据到 Weka 存储
+2. 计算归一化统计量（通过 band_stats.py）
+3. 在评估注册表中注册数据集
 
-⚠️  INTERNAL USE ONLY - This is for AI2 internal workflows.
+对外部用户的说明：
+  设置 OLMOEARTH_EVAL_DATASETS 环境变量指向本地下载的 rslearn 数据集目录。
 
-For external users: Set OLMOEARTH_EVAL_DATASETS env var to point to your
-local directory containing downloaded rslearn datasets.
-
-Usage:
+使用方式：
     python -m olmoearth_pretrain.evals.studio_ingest.cli ingest ...
 
-    # Compute band stats separately:
+    # 单独计算波段统计量：
     python -m olmoearth_pretrain.evals.studio_ingest.band_stats ...
-
-See README.md in this directory for full documentation.
 """
 
 from olmoearth_pretrain.evals.studio_ingest.registry import (

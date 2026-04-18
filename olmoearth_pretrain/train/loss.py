@@ -1,3 +1,30 @@
+"""
+损失函数模块。
+
+本模块实现了 OlmoEarth Pretrain 训练中使用的各种损失函数，包括：
+
+对比学习损失：
+- AllDiscriminationLoss: 全批次判别损失，跨所有样本对比 patch
+- PatchDiscriminationLoss: 逐样本判别损失，内存高效的对比损失
+- ModalityPatchDiscriminationLoss: 逐模态逐样本判别损失
+- ModalityPatchDiscriminationMaskedNegatives: 带掩码负样本的判别损失
+- ModalityPatchDiscriminationLossVec: 全向量化实现的逐模态判别损失（无 for 循环）
+- AdjustedPatchDiscriminationLoss: 调整后的判别损失（NeurIPS 2023）
+- InfoNCELoss: InfoNCE 对比损失
+
+重建损失：
+- L1Loss: L1 范数损失（平均绝对误差）
+- L2Loss: L2 范数损失（均方误差）
+- MAELoss: 掩码自编码重建损失
+- CrossEntropyLoss: 交叉熵损失
+
+正则化损失：
+- KoLeoLoss: KoLeo 正则化项（基于 Kozachenko-Leonenko 微分熵估计器，
+  鼓励特征均匀分布，源自 DINOv2）
+
+所有损失函数通过 LOSS_REGISTRY 注册，可通过 LossConfig 配置并构建。
+"""
+
 """Loss functions for training."""
 
 import logging
@@ -23,34 +50,69 @@ logger = logging.getLogger(__name__)
 
 
 class Loss(ABC):
-    """Abstract base class for loss functions."""
+    """损失函数抽象基类。
 
-    name: str
+    所有损失函数的基类，定义了 compute 接口。
+    每个子类必须实现 compute 方法，并设置 name 属性用于日志记录。
+
+    关键属性:
+        name: 损失函数名称，用于训练日志中标识该损失
+    """
+
+    name: str  # 损失函数名称
 
     @abstractmethod
     def compute(self, predictions: Any, targets: Any, **kwargs: Any) -> Tensor:
-        """Compute the loss between predictions and targets."""
+        """计算预测值和目标值之间的损失。
+
+        Args:
+            predictions: 模型预测输出（通常是 TokensAndMasks 对象）
+            targets: 目标值（通常是 TokensAndMasks 或 MaskedOlmoEarthSample 对象）
+            **kwargs: 额外参数
+
+        Returns:
+            Tensor: 标量损失值
+        """
         pass
 
     @staticmethod
     def _expand_and_reciprocate(t: Tensor) -> Tensor:
-        """As described in the name.
+        """对张量取倒数并按原值重复展开。
 
-        >>> _expand_and_reciprocate(torch.tensor([1, 2, 3]))
-        tensor([1.0000, 0.5000, 0.5000, 0.3333, 0.3333, 0.3333])
+        用于在判别损失中对不同大小的样本进行批次平均时，
+        计算每个 token 的权重倒数。
+
+        示例:
+            >>> _expand_and_reciprocate(torch.tensor([1, 2, 3]))
+            tensor([1.0000, 0.5000, 0.5000, 0.3333, 0.3333, 0.3333])
+
+        Args:
+            t: 输入整数张量
+
+        Returns:
+            Tensor: 取倒数后按原值重复展开的结果
         """
-        reciprocals = torch.reciprocal(t.float())
-        return torch.repeat_interleave(reciprocals, t)
+        reciprocals = torch.reciprocal(t.float())  # 取倒数
+        return torch.repeat_interleave(reciprocals, t)  # 按原值重复
 
 
+# 损失函数注册表，用于通过字符串名称创建对应的损失函数实例
 LOSS_REGISTRY = ClassRegistry[Loss]()
 
 
 @LOSS_REGISTRY.register("all_discrimination")
 class AllDiscriminationLoss(Loss):
-    """Loss function for all discrimination task.
+    """全批次判别损失。
 
-    Discriminates across patches using all samples in a batch.
+    跨整个批次的所有样本进行 patch 对比，是 Galileo 论文中提出的损失函数。
+    对每个解码 token，计算它与批次中所有目标 token 的相似度，
+    以交叉熵损失训练模型将对应的预测-目标对匹配。
+
+    适用场景：需要跨样本对比的大批次训练。
+
+    关键属性:
+        tau: softmax 温度参数，控制对比损失的集中度
+        pred2unit: 是否对预测进行批次统计标准化
     """
 
     name = "AllDisc"
@@ -186,10 +248,19 @@ class ModalityAllDiscriminationLoss(Loss):
 
 @LOSS_REGISTRY.register("patch_discrimination")
 class PatchDiscriminationLoss(Loss):
-    """Loss function for patch discrimination task.
+    """逐样本判别损失（内存高效）。
 
-    Memory-efficient per-sample contrastive loss. Computes similarity matrices
-    per sample rather than across the full batch.
+    对每个样本独立计算对比损失，而非跨整个批次。
+    这是 Latent MIM 论文中使用的核心损失函数。
+    对每个样本的解码 token，计算它与同样本内所有目标 token 的相似度，
+    以交叉熵损失训练匹配。
+
+    优势：内存使用与单样本 token 数成正比，而非批次大小 × token 数。
+
+    关键属性:
+        tau: softmax 温度参数
+        pred2unit: 是否对预测进行批次统计标准化
+        weight: 损失权重
     """
 
     name = "PatchDisc"
@@ -268,10 +339,16 @@ class PatchDiscriminationLoss(Loss):
 
 @LOSS_REGISTRY.register("modality_patch_discrimination")
 class ModalityPatchDiscriminationLoss(Loss):
-    """Loss function for per-modality patch discrimination task.
+    """逐模态逐样本判别损失。
 
-    Memory-efficient per-sample contrastive loss. Computes similarity matrices
-    per sample rather than across the full batch, independently for each modality.
+    对每个模态独立计算 PatchDiscriminationLoss，然后累加。
+    允许为不同模态设置不同权重。
+
+    关键属性:
+        tau: softmax 温度参数
+        pred2unit: 是否对预测进行批次统计标准化
+        weight: 损失权重
+        modality_weights: 各模态的权重字典
     """
 
     name = "ModalityPatchDisc"
@@ -373,11 +450,16 @@ class ModalityPatchDiscriminationLoss(Loss):
 
 @LOSS_REGISTRY.register("modality_patch_discrimination_masked_negatives")
 class ModalityPatchDiscriminationMaskedNegatives(Loss):
-    """Patch discrimination that masks out same-target negatives.
+    """带掩码负样本的逐模态判别损失。
 
-    Useful for map modalities where many tokens may have the same class/embedding.
-    When computing contrastive loss, tokens with identical target embeddings
-    are not treated as negatives (they are masked out from the denominator).
+    在计算对比损失时，若目标 token 的嵌入向量过于相似（余弦相似度 > 阈值），
+    则将这些"同目标"负样本从分母中屏蔽掉（设为 -inf）。
+    这对地图类模态特别有用，因为许多 token 可能具有相同的目标嵌入。
+
+    关键属性:
+        tau: softmax 温度参数
+        same_target_threshold: 判定目标相同的余弦相似度阈值
+        mask_negatives_for_modalities: 需要屏蔽负样本的模态列表
     """
 
     name = "ModalityPatchDiscMasked"
@@ -512,10 +594,17 @@ class ModalityPatchDiscriminationMaskedNegatives(Loss):
 
 @LOSS_REGISTRY.register("modality_patch_discrimination_vec")
 class ModalityPatchDiscriminationLossVec(Loss):
-    """Loss function for per-modality patch discrimination task.
+    """全向量化逐模态判别损失（无 for 循环）。
 
-    This is a fully parallelized implementation with no for loops over samples.
-    It does not support all discrimination loss.
+    使用排序和掩码替代布尔索引和 GPU→CPU 同步点，
+    完全消除了样本级别的 for 循环，提高 GPU 并行度。
+    不支持全批次判别损失（仅支持逐样本）。
+
+    关键属性:
+        tau: softmax 温度参数
+        pred2unit: 是否对预测进行批次统计标准化
+        weight: 损失权重
+        modality_weights: 各模态的权重字典
     """
 
     name = "ModalityPatchDisc"
@@ -697,9 +786,19 @@ ModalityPatchDiscriminationLossNew = ModalityPatchDiscriminationLoss
 
 @LOSS_REGISTRY.register("adjusted_patch_discrimination")
 class AdjustedPatchDiscriminationLoss(Loss):
-    """Loss function for adjusted patch discrimination task.
+    """调整后的判别损失。
 
-    Reference: https://proceedings.neurips.cc/paper_files/paper/2023/file/48aaa5ea741ae8430bd58e25917d267d-Paper-Conference.pdf
+    基于 NeurIPS 2023 论文，对负样本的相似度分数施加高斯权重，
+    使得接近正样本的负样本获得更高权重，远离的获得更低权重。
+    这有助于模型关注"困难"负样本。
+
+    参考: https://proceedings.neurips.cc/paper_files/paper/2023/file/48aaa5ea741ae8430bd58e25917d267d-Paper-Conference.pdf
+
+    关键属性:
+        tau: softmax 温度参数
+        mu: 高斯分布的均值
+        sigma: 高斯分布的标准差
+        pred2unit: 是否对预测进行批次统计标准化
     """
 
     name = "AdjustedPatchDisc"
@@ -810,7 +909,10 @@ class AdjustedPatchDiscriminationLoss(Loss):
 
 @LOSS_REGISTRY.register("l1")
 class L1Loss(Loss):
-    """Loss function for L1 (mean average error)."""
+    """L1 损失函数（平均绝对误差）。
+
+    仅对解码 token 计算预测和目标之间的 L1 距离。
+    """
 
     name = "L1"
 
@@ -837,7 +939,10 @@ class L1Loss(Loss):
 
 @LOSS_REGISTRY.register("l2")
 class L2Loss(Loss):
-    """Loss function for L2 (mean squared error)."""
+    """L2 损失函数（均方误差）。
+
+    仅对解码 token 计算预测和目标之间的 L2 距离。
+    """
 
     name = "L2"
 
@@ -863,7 +968,17 @@ class L2Loss(Loss):
 
 @LOSS_REGISTRY.register("mae")
 class MAELoss(Loss):
-    """Loss function masked auto-encoding (reconstruction)."""
+    """掩码自编码重建损失。
+
+    计算模型重建值与原始值之间的像素级损失（如 MSE、L1、SmoothL1）。
+    支持仅对解码 token 计算损失，或对所有非缺失 token 计算。
+
+    关键属性:
+        only_decode: 是否仅对 DECODER 掩码的 token 计算损失
+        loss: PyTorch 损失函数实例（如 MSELoss、SmoothL1Loss）
+        weight: 损失权重
+        tokenization_config: 分组配置，用于自定义波段分组
+    """
 
     name = "MAE"
 
@@ -973,7 +1088,15 @@ class CrossEntropyLoss(Loss):
 
 @LOSS_REGISTRY.register("InfoNCE")
 class InfoNCELoss(Loss):
-    """Loss function for InfoNCE."""
+    """InfoNCE 对比损失。
+
+    标准的 InfoNCE 损失，对 L2 归一化后的预测和目标计算相似度矩阵，
+    对角线为正样本对，其余为负样本对。
+
+    关键属性:
+        tau: softmax 温度参数
+        weight: 损失权重
+    """
 
     name = "InfoNCE"
 
@@ -1011,13 +1134,18 @@ class InfoNCELoss(Loss):
 
 @LOSS_REGISTRY.register("KoLeo")
 class KoLeoLoss(Loss):
-    """Loss function for cross entropy.
+    """KoLeo 正则化损失。
 
-    The KoLeo regularizer derives from the
-    Kozachenko-Leonenko differential entropy estimator and
-    encourages a uniform span of the features within a batch.
+    基于 Kozachenko-Leonenko 微分熵估计器的正则化项，
+    鼓励批次内特征在超球面上均匀分布，防止特征坍缩。
+    源自 DINOv2 的实现。
 
-    https://github.com/facebookresearch/dinov2/blob/main/dinov2/loss/koleo_loss.py
+    参考: https://github.com/facebookresearch/dinov2/blob/main/dinov2/loss/koleo_loss.py
+
+    关键属性:
+        weight: 正则化权重（默认 0.1，与 DINOv2 一致）
+        mode: 计算模式，"instance" 在实例级计算最近邻，"patch" 在 patch 级计算
+        eps: 避免除零的小常数
     """
 
     name = "KoLeo"
@@ -1104,19 +1232,29 @@ class KoLeoLoss(Loss):
 
 @dataclass
 class LossConfig(Config):
-    """Configuration for loss functions.
+    """损失函数配置类。
+
+    通过 loss_config 字典指定损失函数类型和参数，
+    使用 LOSS_REGISTRY 注册表创建对应的损失函数实例。
 
     Args:
-        loss_config: Loss config in the format of
-        e.g.
-        {
-            "type": "patch_discrimination",
-            # rest of init kwargs
+        loss_config: 损失函数配置字典，格式为：
+            {
+                "type": "patch_discrimination",  # 注册表中的损失名称
+                # 其余为损失函数的 __init__ 参数
+            }
     """
 
-    loss_config: dict[str, Any]  # List of loss configs
+    loss_config: dict[str, Any]  # 损失配置字典
 
     def build(self) -> Loss:
-        """Build a Loss from the config."""
-        loss_key = self.loss_config.pop("type")
-        return LOSS_REGISTRY.get_class(loss_key)(**self.loss_config)
+        """从配置构建损失函数实例。
+
+        从 loss_config 中提取 "type" 键作为损失名称，
+        其余键值作为损失函数的初始化参数。
+
+        Returns:
+            Loss: 构建好的损失函数实例
+        """
+        loss_key = self.loss_config.pop("type")  # 提取损失名称
+        return LOSS_REGISTRY.get_class(loss_key)(**self.loss_config)  # 从注册表创建实例

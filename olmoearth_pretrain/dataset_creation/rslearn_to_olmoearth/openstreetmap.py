@@ -1,8 +1,7 @@
-"""Post-process ingested OpenStreetMap data into the OlmoEarth Pretrain dataset.
+"""将摄取的 OpenStreetMap 数据后处理到 OlmoEarth Pretrain 数据集。
 
-OpenStreetMap is vector data, so we want to keep the precision of the data as high as
-possible, but the data size (i.e. bytes) is also small enough that we can store it
-under the 10 m/pixel tiles without needing too much storage space.
+OpenStreetMap 是矢量数据，我们希望尽可能保持数据的精度，
+但数据大小（字节数）也足够小，可以存储在 10 米/像素的瓦片下而不需要太多存储空间。
 
 So, we use the 10 m/pixel grid, but store it with 16x zoomed in coordinates (meaning
 the coordinates actually match those of the 0.625 m/pixel tiles). This way we can use

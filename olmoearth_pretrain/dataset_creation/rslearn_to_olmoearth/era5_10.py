@@ -1,4 +1,8 @@
-"""Post-process ingested ERA5_10 data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 ERA5_10（10米分辨率 ERA5）数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 ERA5_10 数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+ERA5_10 是 ERA5 的 10 米分辨率版本，用于与高分辨率遥感数据对齐。
+"""
 
 import argparse
 import csv

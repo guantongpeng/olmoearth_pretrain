@@ -1,4 +1,8 @@
-"""Single file architecture for Tessera model https://github.com/ucam-eo/tessera/tree/a883aa12392eb9fc237ae4c29824318760e138a2/tessera_infer/src/models."""
+"""Tessera 模型单文件架构。源自 https://github.com/ucam-eo/tessera
+
+Tessera 遥感基础模型的核心架构代码。
+此文件为外部代码的本地副本，不做修改。
+"""
 
 import math
 

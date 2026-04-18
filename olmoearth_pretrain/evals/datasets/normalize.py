@@ -1,4 +1,15 @@
-"""Shared normalization functions for eval sets."""
+"""评估数据集共享归一化函数。
+
+本模块提供评估数据集中使用的归一化功能，包括：
+- 波段统计量插补：当某些波段缺失时，用其他波段的统计量填充
+- 多种归一化方法：支持裁剪/不裁剪、不同标准差倍数、整数量化等
+- 波段归一化：将原始像素值归一化到 [0, 1] 或其他范围
+
+主要组件：
+- impute_normalization_stats: 插补缺失波段的归一化统计量
+- NormMethod: 归一化方法枚举
+- normalize_bands: 波段归一化主函数
+"""
 
 import logging
 from enum import Enum

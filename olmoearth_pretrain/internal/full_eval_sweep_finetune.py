@@ -1,8 +1,11 @@
-"""Launch fine-tune evaluation sweeps for OlmoEarth and other models.
+"""OlmoEarth 及其他模型的微调评估扫描启动脚本。
 
-Usage examples:
+本脚本对 OlmoEarth Pretrain 或其他基线模型执行微调评估扫描，
+扫描维度主要为学习率，归一化方法不进行扫描（由 all_evals.py 定义）。
 
-1. Finetune all eval tasks using TerraMind model (default lr only):
+使用示例:
+
+1. 使用 TerraMind 模型微调所有评估任务（默认学习率）:
    python olmoearth_pretrain/internal/full_eval_sweep_finetune.py \
        --project_name test_finetune \
        --module_path olmoearth_pretrain/evals/models/terramind/terramind_launch.py \
@@ -10,7 +13,7 @@ Usage examples:
        --model terramind \
        --defaults_only
 
-2. Finetune all eval tasks using OlmoEarth model (default lr only):
+2. 使用 OlmoEarth 模型微调所有评估任务（默认学习率）:
    python olmoearth_pretrain/internal/full_eval_sweep_finetune.py \
        --checkpoint_path /weka/dfive-default/helios/checkpoints/joer/phase2.0_base_lr0.0001_wd0.02/step667200 \
        --project_name test_finetune \
@@ -18,16 +21,15 @@ Usage examples:
        --cluster ai2/jupiter \
        --defaults_only
 
-3. To run a subset of tasks, add:
+3. 运行部分任务:
      --trainer.callbacks.downstream_evaluator.tasks_to_run='["m_eurosat","m_so2sat","mados"]'
-   You can also launch multiple jobs with different tasks_to_run values to speed up the finetuning.
 
-Flags:
-  --defaults_only  Runs just one job: lr = 1e-4
-  (omit)           Sweeps lrs: [1e-4, 5e-4, 1e-3]
+标志:
+  --defaults_only  仅运行一个作业: lr = 1e-4
+  (省略)           扫描学习率: [1e-4, 5e-4, 1e-3]
 
-OlmoEarth: normalization method (pretrained vs dataset) is *not* swept.
-Each FT eval task's normalization is defined in all_evals.py.
+主要类:
+    ModelPreset: 模型预设，包含归一化覆盖和全局参数
 """
 
 import argparse
@@ -46,15 +48,22 @@ from olmoearth_pretrain.internal.experiment import SubCmd
 
 logger = getLogger(__name__)
 
-# Learning rates to sweep over.
+# 微调学习率扫描范围
 FT_LRS = [1e-4, 5e-4, 1e-3]
 
-TASK_ARG_PREFIX = "--trainer.callbacks.downstream_evaluator.tasks"
-FT_TASK_NAMES = list(FT_EVAL_TASKS.keys())
+TASK_ARG_PREFIX = "--trainer.callbacks.downstream_evaluator.tasks"  # 任务参数前缀
+FT_TASK_NAMES = list(FT_EVAL_TASKS.keys())  # 微调评估任务名称列表
 
 
 def _format_per_task_args(overrides: dict[str, Any]) -> list[str]:
-    """Repeat overrides for each downstream task."""
+    """为每个下游任务重复覆盖参数。
+
+    Args:
+        overrides: 参数覆盖字典
+
+    Returns:
+        list[str]: 为每个任务生成的参数字符串列表
+    """
     if not overrides:
         return []
     args: list[str] = []
@@ -66,7 +75,17 @@ def _format_per_task_args(overrides: dict[str, Any]) -> list[str]:
 
 
 def _format_task_specific_args(task_overrides: dict[str, dict[str, Any]]) -> list[str]:
-    """Generate overrides for specific downstream tasks."""
+    """为特定下游任务生成覆盖参数。
+
+    Args:
+        task_overrides: 任务名到参数覆盖字典的映射
+
+    Returns:
+        list[str]: 特定任务的参数字符串列表
+
+    Raises:
+        ValueError: 如果任务名不在 FT_TASK_NAMES 中
+    """
     if not task_overrides:
         return []
     args: list[str] = []
@@ -79,29 +98,46 @@ def _format_task_specific_args(task_overrides: dict[str, dict[str, Any]]) -> lis
     return args
 
 
-FT_MODE_ARGS = _format_per_task_args({"eval_mode": "FINETUNE"})
-DATASET_STATS_ARGS = _format_per_task_args({"norm_stats_from_pretrained": "False"})
+FT_MODE_ARGS = _format_per_task_args({"eval_mode": "FINETUNE"})  # 微调模式参数
+DATASET_STATS_ARGS = _format_per_task_args({"norm_stats_from_pretrained": "False"})  # 数据集归一化参数
 
 
 def _format_ft_lr_args(lr: float) -> list[str]:
+    """为每个任务生成微调学习率参数。
+
+    Args:
+        lr: 微调学习率
+
+    Returns:
+        list[str]: 微调学习率参数列表
+    """
     return _format_per_task_args({"ft_lr": lr})
 
 
 @dataclass(frozen=True)
 class ModelPreset:
-    """Model-specific overrides used for evaluation normalisation."""
+    """模型预设，用于评估归一化的模型特定覆盖参数。
+
+    关键属性:
+        per_task_overrides: 适用于所有任务的参数覆盖
+        task_specific_overrides: 特定任务的参数覆盖
+        global_args: 全局命令行参数元组
+        include_dataset_stats: 是否包含数据集统计参数
+        launch_script_key: 启动脚本键名（用于查找脚本路径）
+        supports_pretrained_normalizer: 是否支持预训练归一化器
+    """
 
     per_task_overrides: dict[str, Any] = field(default_factory=dict)
     task_specific_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     global_args: tuple[str, ...] = ()
     include_dataset_stats: bool = True
     launch_script_key: str | None = None
-    # Whether this model supports --model.use_pretrained_normalizer
+    # 该模型是否支持 --model.use_pretrained_normalizer
     supports_pretrained_normalizer: bool = False
 
 
-MODEL_PRESETS: dict[str, ModelPreset] = {
-    "dino_v3": ModelPreset(
+MODEL_PRESETS: dict[str, ModelPreset] = {  # 模型预设映射，键为模型名称
+    "dino_v3": ModelPreset(  # DINOv3 模型预设
         per_task_overrides={"norm_method": "NormMethod.NORM_YES_CLIP_MIN_MAX_INT"},
         launch_script_key="dino_v3",
     ),

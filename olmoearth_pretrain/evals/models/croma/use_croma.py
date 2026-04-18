@@ -1,6 +1,11 @@
 # type: ignore
 # ruff: noqa
-"""CROMA model from https://github.com/antofuller/CROMA/blob/main/use_croma.py"""
+"""CROMA 模型单文件实现。源自 https://github.com/antofuller/CROMA/blob/main/use_croma.py
+
+CROMA (Contrastive Remote sensing Model Architecture) 的核心模型代码，
+包含 SAR 和光学编码器、交叉注意力模块等组件。
+此文件为外部代码的本地副本，不做修改。
+"""
 
 from torch import nn, einsum
 from einops import rearrange

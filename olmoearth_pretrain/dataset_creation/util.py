@@ -1,4 +1,8 @@
-"""Utilities related to dataset creation."""
+"""数据集创建相关工具函数。
+
+本模块提供数据集创建过程中使用的通用工具函数，
+包括元数据 CSV 的读写和数据集窗口管理等。
+"""
 
 from rslearn.dataset import Window
 from upath import UPath

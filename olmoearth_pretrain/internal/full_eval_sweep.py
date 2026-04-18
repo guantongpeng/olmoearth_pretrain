@@ -1,6 +1,17 @@
-"""Run an evaluation sweep for an arbitrary OlmoEarth Pretrain checkpoint.
+"""OlmoEarth Pretrain 检查点评估扫描脚本。
 
-e.g. python -m olmoearth_pretrain.internal.full_eval_sweep --cluster=ai2/saturn-cirrascale --checkpoint_path=/weka/dfive-default/helios/checkpoints/henryh/latent_mim_cross_only_dec_wc_osm_srtm_dataset_percentage_sweep_.0078125/step450000  --module_path=scripts/2025_06_26_dataset_percentage_experiments/latent_mim_all_data.py (extra args here e.g --model.decoder_config.depth=1)
+本脚本对 OlmoEarth Pretrain 或其他基线模型的检查点执行完整的评估扫描，
+扫描超参数包括学习率、归一化模式和池化类型等。
+
+使用示例:
+    python -m olmoearth_pretrain.internal.full_eval_sweep --cluster=ai2/saturn-cirrascale --checkpoint_path=/weka/dfive-default/helios/checkpoints/henryh/latent_mim_cross_only_dec_wc_osm_srtm_dataset_percentage_sweep_.0078125/step450000  --module_path=scripts/2025_06_26_dataset_percentage_experiments/latent_mim_all_data.py (额外参数, 如 --model.decoder_config.depth=1)
+
+主要功能:
+    1. 构建评估命令，支持多种模型（OlmoEarth、DINOv3、Galileo、CROMA 等）
+    2. 扫描学习率、归一化模式、池化类型等超参数
+    3. 支持从 JSON 文件加载评估设置
+    4. 支持检查点目录扫描模式
+    5. 支持本地运行和 Beaker 集群启动
 """
 
 import argparse
@@ -27,22 +38,30 @@ from olmoearth_pretrain.internal.constants import (
 from olmoearth_pretrain.internal.experiment import SubCmd
 from olmoearth_pretrain.nn.pooling import PoolingType
 
-LP_LRs = [1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1, 5e-1]
-Normalization_MODES = ["pre_trained", "dataset"]
-pooling_types = [PoolingType.MEAN, PoolingType.MAX]
+LP_LRs = [1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1, 5e-1]  # 线性探针学习率扫描范围
+Normalization_MODES = ["pre_trained", "dataset"]  # 归一化模式：预训练归一化 vs 数据集归一化
+pooling_types = [PoolingType.MEAN, PoolingType.MAX]  # 池化类型：平均池化 vs 最大池化
 
 logger = getLogger(__name__)
 
 
 def create_linear_probe_arg(task_name: str, field_name: str) -> str:
-    """Create a linear probe argument for a given task name."""
+    """为指定任务创建线性探针参数字符串。
+
+    Args:
+        task_name: 评估任务名称
+        field_name: 参数字段名称（如 probe_lr, pooling_type）
+
+    Returns:
+        str: 格式为 "--trainer.callbacks.downstream_evaluator.tasks.{task_name}.{field_name}={arg}" 的参数模板
+    """
     initial_str = (
         f"--trainer.callbacks.downstream_evaluator.tasks.{task_name}.{field_name}="
     )
     return initial_str + "{arg}"
 
 
-lr_args = " ".join(
+lr_args = " ".join(  # 为所有线性探针任务生成学习率参数模板
     [
         create_linear_probe_arg(task_name, "probe_lr")
         for task_name, task in EVAL_TASKS.items()
@@ -50,7 +69,7 @@ lr_args = " ".join(
     ]
 )
 
-pooling_args = " ".join(
+pooling_args = " ".join(  # 为所有任务生成池化类型参数模板
     [" "]
     + [
         create_linear_probe_arg(task_name, "pooling_type")
@@ -58,7 +77,7 @@ pooling_args = " ".join(
     ]
 )
 
-quantize_args = " ".join(
+quantize_args = " ".join(  # 为所有任务生成嵌入量化参数
     [" "]
     + [
         f"--trainer.callbacks.downstream_evaluator.tasks.{task_name}.quantize_embeddings=True"
@@ -68,7 +87,14 @@ quantize_args = " ".join(
 
 
 def get_embedding_dim_args(dim: int) -> str:
-    """Get embedding dim args for all tasks."""
+    """为所有任务生成嵌入维度参数。
+
+    Args:
+        dim: 嵌入维度（如 128, 64）
+
+    Returns:
+        str: 嵌入维度参数字符串
+    """
     return " ".join(
         [" "]
         + [
@@ -78,7 +104,7 @@ def get_embedding_dim_args(dim: int) -> str:
     )
 
 
-dataset_args = " ".join(
+dataset_args = " ".join(  # 为所有任务生成使用数据集归一化的参数
     [" "]
     + [
         f"--trainer.callbacks.downstream_evaluator.tasks.{task_name}.norm_stats_from_pretrained=False"
@@ -86,7 +112,7 @@ dataset_args = " ".join(
     ]
 )
 
-olmoearth_args = " ".join(
+olmoearth_args = " ".join(  # 为所有任务生成使用预训练归一化的参数
     [""]
     + [
         f"--trainer.callbacks.downstream_evaluator.tasks.{task_name}.norm_stats_from_pretrained=True"
@@ -96,7 +122,16 @@ olmoearth_args = " ".join(
 
 
 def loop_through_params(no_norm: bool = False) -> Generator[dict[str, Any], None, None]:
-    """Yield a dict of the hps we are sweeping over."""
+    """生成超参数扫描的组合字典。
+
+    扫描维度：学习率 x 归一化模式 x 池化类型
+
+    Args:
+        no_norm: 如果为 True，仅使用 dataset 归一化模式（跳过预训练归一化扫描）
+
+    Yields:
+        dict[str, Any]: 包含 lr, norm_mode, pooling_type 的参数字典
+    """
     if no_norm:
         normalization_modes = ["dataset"]
     else:
@@ -112,7 +147,11 @@ def loop_through_params(no_norm: bool = False) -> Generator[dict[str, Any], None
 
 
 def lr_only_params() -> Generator[dict[str, Any], None, None]:
-    """Yield a dict of the hps we are sweeping over."""
+    """仅扫描学习率的参数生成器。
+
+    Yields:
+        dict[str, Any]: 包含 lr 的参数字典
+    """
     for lr in LP_LRs:
         yield {
             "lr": lr,
@@ -514,7 +553,7 @@ def _get_pooling_type_str(pooling_type: str) -> str:
     return pooling_type_str
 
 
-LAUNCH_OVERRIDES = "--launch.priority=high --launch.num_gpus=1 --launch.task_name=eval"
+LAUNCH_OVERRIDES = "--launch.priority=high --launch.num_gpus=1 --launch.task_name=eval"  # Beaker 启动覆盖参数
 
 
 def _get_env_prefix(args: argparse.Namespace, module_path: str) -> str:

@@ -1,4 +1,23 @@
-"""Convert rslearn dataset to OlmoEarth Pretrain evaluation dataset format."""
+"""将 rslearn 数据集转换为 OlmoEarth Pretrain 评估数据集格式。
+
+本模块是 rslearn 数据集与 OlmoEarth 评估框架之间的适配层，
+将 rslearn 的 ModelDataset 输出转换为 MaskedOlmoEarthSample 格式。
+
+主要组件：
+- get_timestamps: 根据时间范围生成月度时间戳
+- RslearnToOlmoEarthDataset: 核心适配器类，将 rslearn 样本转换为 OlmoEarth 格式
+  - 支持多模态输入 (S2, S1, Landsat)
+  - 支持 Sentinel-1 dB 转换
+  - 支持预训练归一化统计量或数据集自带统计量
+  - 支持分割和分类任务
+- IterableRslearnToOlmoEarthDataset: 可迭代版本
+- wrap_rslearn_dataset: 自动选择 map/iterable 版本的包装函数
+- from_registry_entry: 从注册表条目构建数据集
+
+数据处理流程：
+  rslearn 原始数据 (T*C, H, W) -> reshape 为 (H, W, T, C) -> 归一化 ->
+  附加时间戳 -> 封装为 MaskedOlmoEarthSample
+"""
 
 from __future__ import annotations
 
@@ -78,14 +97,27 @@ def get_timestamps(
 
 
 class RslearnToOlmoEarthDataset(Dataset):
-    """Convert rslearn ModelDataset to OlmoEarth Pretrain MaskedOlmoEarthSample dataset.
+    """将 rslearn ModelDataset 转换为 OlmoEarth Pretrain MaskedOlmoEarthSample 格式。
 
-    Expects rslearn ModelDataset to yield: (inputs_dict, target, metadata).
-    inputs_dict[<modality>] shape: (T*C, H, W) after rslearn transforms.
-    We reshape to (H, W, T, C), normalize, attach timestamps, and wrap as OlmoEarthSample.
+    期望 rslearn ModelDataset 输出: (inputs_dict, target, metadata)。
+    inputs_dict[<modality>] 的形状为 (T*C, H, W)，经过 rslearn 变换后。
+    本类将其 reshape 为 (H, W, T, C)，归一化，附加时间戳，封装为 OlmoEarthSample。
 
-    Requires a pre-built ModelDataset (via RslearnDataModule + jsonargparse).
-    Use from_model_config() or build_rslearn_eval_dataset() to construct.
+    关键属性：
+        dataset: 底层 rslearn ModelDataset
+        input_modalities: 输入模态名称列表
+        target_task_name: 对于多任务，指定子任务名称
+        target_task_type: 任务类型 (分割/分类)
+        norm_stats_from_pretrained: 是否使用预训练归一化统计量
+        normalizer_computed: 预训练归一化器 (当使用预训练统计量时)
+        dataset_norm_stats: 数据集归一化统计量 (当不使用预训练统计量时)
+        norm_method: 归一化方法
+        start_time/end_time: 时间戳生成的时间范围
+        max_timesteps: 最大时间步数
+
+    使用方式：
+        通过 from_model_config() 或 build_rslearn_eval_dataset() 构造，
+        或通过 from_registry_entry() 从注册表条目构建。
     """
 
     allowed_modalities = {
@@ -424,7 +456,11 @@ class RslearnToOlmoEarthDataset(Dataset):
 
 
 class IterableRslearnToOlmoEarthDataset(IterableDataset, RslearnToOlmoEarthDataset):
-    """Iterable variant so PyTorch DataLoader uses __iter__ instead of __getitem__."""
+    """可迭代版本的数据集适配器，使 PyTorch DataLoader 使用 __iter__ 而非 __getitem__。
+
+    某些 rslearn 数据集是可迭代风格而非映射风格，
+    此类确保在这种情况下使用迭代器模式。
+    """
 
     def __iter__(self) -> Iterator[tuple[MaskedOlmoEarthSample, torch.Tensor]]:
         """Iterate over the dataset."""
@@ -433,7 +469,17 @@ class IterableRslearnToOlmoEarthDataset(IterableDataset, RslearnToOlmoEarthDatas
 
 
 def wrap_rslearn_dataset(**kwargs: Any) -> RslearnToOlmoEarthDataset:
-    """Wrap an rslearn dataset, picking map-style or iterable based on what rslearn returns."""
+    """包装 rslearn 数据集，根据底层类型自动选择 map-style 或 iterable 版本。
+
+    如果底层 rslearn 数据集是 IterableDataset，则使用 IterableRslearnToOlmoEarthDataset；
+    否则使用 RslearnToOlmoEarthDataset。
+
+    Args:
+        **kwargs: 传递给数据集构造函数的参数
+
+    Returns:
+        RslearnToOlmoEarthDataset: 适当类型的数据集实例
+    """
     if isinstance(kwargs.get("model_dataset"), IterableDataset):
         return IterableRslearnToOlmoEarthDataset(**kwargs)
     return RslearnToOlmoEarthDataset(**kwargs)

@@ -1,3 +1,32 @@
+"""
+掩码策略模块。
+
+本模块实现了 OlmoEarth Pretrain 中使用的各种掩码策略，用于自监督预训练中
+决定哪些 token 送入在线编码器、哪些送入解码器、哪些仅送入目标编码器。
+
+掩码值类型（MaskValue）：
+- ONLINE_ENCODER: 送入在线编码器的 token（可计算梯度）
+- DECODER: 送入解码器的 token（需从编码表示重建）
+- TARGET_ENCODER_ONLY: 仅送入目标编码器的 token（不参与在线编码/解码）
+- MISSING: 缺失数据（不参与任何计算）
+
+掩码策略层次结构：
+- MaskingStrategy: 基类，定义 apply_mask 接口
+  - RandomMaskingStrategy: 随机掩码，每个 token 独立随机分配
+  - SpaceMaskingStrategy: 空间掩码，整个 patch 共享相同掩码值
+  - TimeMaskingStrategy: 时间掩码，整个时间步共享相同掩码值
+  - SpaceTimeMaskingStrategy: 随机选择空间或时间掩码
+  - ModalityCrossMaskingStrategy: 跨模态掩码，在基础策略上选择编码/解码的模态
+  - RandomWithDecodeMaskingStrategy: 分离编码/解码模态的随机掩码
+  - RandomIncreasingMaskingStrategy: 逐步增加掩码比例
+  - 等等
+
+关键概念：
+- encode_ratio: 送入在线编码器的 token 比例
+- decode_ratio: 送入解码器的 token 比例
+- tokenization_config: 分组配置，影响掩码粒度（如波段分组）
+"""
+
 """Masking module."""
 
 import logging
@@ -23,7 +52,8 @@ from olmoearth_pretrain.types import ArrayTensor
 
 logger = logging.getLogger(__name__)
 
-# all bandset indices should be tuples of (modality, bandset_idx) so we can create a power set of these combinations from it
+# 构建所有模态的所有波段集索引的完整列表
+# 每个元素为 (模态名, 波段集索引) 的元组，用于跨模态掩码策略中生成幂集
 ALL_BANDSET_IDXS: list[tuple[str, int]] = []
 for modality in Modality.values():
     for bandset_idx in range(modality.num_band_sets):
@@ -31,40 +61,79 @@ for modality in Modality.values():
 
 
 class MaskingStrategy:
-    """Abstract base class for masking strategies.
+    """掩码策略抽象基类。
 
-    Be sure to implement apply_mask in subclasses.
+    所有掩码策略的基类，定义了 apply_mask 接口，子类必须实现该方法。
+    提供了通用的掩码创建工具方法，如 _create_random_mask、fill_mask_with_missing_values 等。
+
+    关键属性:
+        tokenization_config: 分组配置，影响波段分组和掩码形状。
+            若为 None，则使用模态的默认波段分组。
+        _encode_ratio: 送入在线编码器的 token 比例
+        _decode_ratio: 送入解码器的 token 比例
+
+    使用场景:
+        在训练数据经过数据增强后，apply_mask 方法被调用来决定每个 token 的角色
+        （在线编码/解码/目标编码/缺失），返回 MaskedOlmoEarthSample 对象。
     """
 
-    tokenization_config: TokenizationConfig | None = None
+    tokenization_config: TokenizationConfig | None = None  # 分组配置，可选
 
     @property
     def name(self) -> str:
-        """Return the name of the masking strategy."""
+        """返回掩码策略的名称（从类名中提取，去掉 'MaskingStrategy' 后缀并转为小写）。"""
         return self.__class__.__name__.replace("MaskingStrategy", "").lower()
 
     @property
     def encode_ratio(self) -> float:
-        """Return the encode ratio."""
+        """返回编码比率（送入在线编码器的 token 比例）。
+
+        Raises:
+            AttributeError: 若 _encode_ratio 未设置
+        """
         if not hasattr(self, "_encode_ratio"):
             raise AttributeError("Encode ratio not set")
         return self._encode_ratio
 
     @property
     def decode_ratio(self) -> float:
-        """Return the decode ratio."""
+        """返回解码比率（送入解码器的 token 比例）。
+
+        Raises:
+            AttributeError: 若 _decode_ratio 未设置
+        """
         if not hasattr(self, "_decode_ratio"):
             raise AttributeError("Decode ratio not set")
         return self._decode_ratio
 
     def _get_num_bandsets(self, modality_name: str) -> int:
-        """Get the number of bandsets for a modality, using tokenization config if available."""
+        """获取指定模态的波段集数量。
+
+        优先使用 tokenization_config 中的配置（支持自定义波段分组），
+        否则使用模态的默认波段集数量。
+
+        Args:
+            modality_name: 模态名称
+
+        Returns:
+            int: 波段集数量
+        """
         if self.tokenization_config is not None:
             return self.tokenization_config.get_num_bandsets(modality_name)
         return Modality.get(modality_name).num_band_sets
 
     def _get_bandset_indices(self, modality_name: str) -> list[list[int]]:
-        """Get the bandset indices for a modality, using tokenization config if available."""
+        """获取指定模态的波段集索引列表。
+
+        优先使用 tokenization_config 中的配置（支持自定义波段分组），
+        否则使用模态的默认波段集索引。
+
+        Args:
+            modality_name: 模态名称
+
+        Returns:
+            list[list[int]]: 每个波段集对应的原始波段索引列表
+        """
         if self.tokenization_config is not None:
             return self.tokenization_config.get_bandset_indices(modality_name)
         return Modality.get(modality_name).bandsets_as_indices()
@@ -72,40 +141,69 @@ class MaskingStrategy:
     def apply_mask(
         self, batch: OlmoEarthSample, patch_size: int | None = None, **kwargs: Any
     ) -> MaskedOlmoEarthSample:
-        """Apply masking to the input data.
+        """对输入数据应用掩码策略（子类必须实现）。
 
         Args:
-            batch: Input data of type OlmoEarthSample
-            patch_size: Optional patch size for spatial masking strategies
-            **kwargs: Additional arguments for maskings
+            batch: 输入数据，类型为 OlmoEarthSample
+            patch_size: 可选的 patch 大小，用于空间掩码策略
+            **kwargs: 额外的掩码参数
+
+        Returns:
+            MaskedOlmoEarthSample: 包含原始数据和掩码的样本
+
+        Raises:
+            NotImplementedError: 子类未实现此方法
         """
         raise NotImplementedError("Subclasses must implement this method")
 
     def get_missing_mask(
         self, instance: torch.Tensor, modality: ModalitySpec, mask: torch.Tensor
     ) -> torch.Tensor:
-        """Get the missing mask for the input data."""
+        """获取输入数据中缺失值的掩码。
+
+        检查每个波段集中是否有任何波段的值为 MISSING_VALUE，
+        若某波段集中任一波段缺失，则标记该波段集整体为缺失。
+
+        Args:
+            instance: 模态数据张量
+            modality: 模态规格
+            mask: 当前掩码张量（用于确定输出形状和设备）
+
+        Returns:
+            torch.Tensor: 布尔型缺失掩码，True 表示该位置数据缺失
+        """
         missing_mask = mask.new_zeros(mask.shape, dtype=torch.bool)
         bandset_indices = self._get_bandset_indices(modality.name)
         for i, band_set_indices in enumerate(bandset_indices):
-            instance_band_set = instance[..., band_set_indices]
-            missing_mask_band_set = instance_band_set == MISSING_VALUE
-            missing_mask_band_set_any = missing_mask_band_set.any(dim=-1)
-            # If any band in the band set is missing, set the whole band set to missing
+            instance_band_set = instance[..., band_set_indices]  # 提取该波段集的所有波段数据
+            missing_mask_band_set = instance_band_set == MISSING_VALUE  # 检查哪些位置是缺失值
+            missing_mask_band_set_any = missing_mask_band_set.any(dim=-1)  # 任一波段缺失则整个波段集标记为缺失
             missing_mask[..., i] = missing_mask_band_set_any
         return missing_mask
 
     def fill_mask_with_missing_values(
         self, instance: torch.Tensor, mask: torch.Tensor, modality: ModalitySpec
     ) -> torch.Tensor:
-        """Apply a missing mask to the input data."""
+        """用缺失值标记填充掩码。
+
+        在已有的掩码基础上，将数据中实际缺失的位置标记为 MaskValue.MISSING。
+        若存在缺失值，会克隆掩码张量以避免修改原始数据（原始掩码可能被多个模态共享）。
+
+        Args:
+            instance: 模态数据张量
+            mask: 当前掩码张量
+            modality: 模态规格
+
+        Returns:
+            torch.Tensor: 填充了缺失值标记后的掩码张量
+        """
         missing_mask = self.get_missing_mask(instance, modality, mask)
-        # If we are changing the mask, we need to clone it as it may be a view of a masked used by different modalities
+        # 若存在缺失值，需要克隆掩码，因为原始掩码可能被多个模态共享
         if missing_mask.any():
             output_mask = mask.clone()
-            output_mask[missing_mask] = MaskValue.MISSING.value
+            output_mask[missing_mask] = MaskValue.MISSING.value  # 标记缺失位置
         else:
-            output_mask = mask
+            output_mask = mask  # 无缺失值，直接返回原始掩码
         return output_mask
 
     def _create_random_mask(
@@ -117,27 +215,50 @@ class MaskingStrategy:
         encode_ratio: float | None = None,
         decode_ratio: float | None = None,
     ) -> ArrayTensor:
+        """创建随机掩码张量。
+
+        根据模态特性（空间/时间/静态）和编码/解码比率，为每个 token 随机分配
+        ONLINE_ENCODER、DECODER 或 TARGET_ENCODER_ONLY 掩码值。
+        空间模态以 patch 为单位进行掩码（同一 patch 内所有 token 共享掩码值）。
+
+        Args:
+            modality: 模态规格
+            shape: 数据形状
+            patch_size_at_16: 基础 10m/像素 的 patch 大小
+            device: 计算设备
+            encode_ratio: 自定义编码比率（覆盖默认值）
+            decode_ratio: 自定义解码比率（覆盖默认值）
+
+        Returns:
+            ArrayTensor: 掩码张量，形状与输入数据匹配
+        """
         mask_shape = list(shape)
-        mask_shape[-1] = self._get_num_bandsets(modality.name)
+        mask_shape[-1] = self._get_num_bandsets(modality.name)  # 最后一维替换为波段集数量
         if modality.is_spatial:
+            # 空间模态：计算 patch 大小并缩小掩码形状
             patch_size = patch_size_at_16 * modality.image_tile_size_factor
-            mask_shape[1] //= patch_size
-            mask_shape[2] //= patch_size
+            mask_shape[1] //= patch_size  # 高度方向除以 patch 大小
+            mask_shape[2] //= patch_size  # 宽度方向除以 patch 大小
 
+        # 计算总 token 数
         if modality.is_spatial or modality.is_multitemporal:
-            b = shape[0]
-            num_tokens = math.prod(mask_shape[1:])
+            b = shape[0]  # 批次大小
+            num_tokens = math.prod(mask_shape[1:])  # 除批次维外的总 token 数
         else:
-            num_tokens = math.prod(mask_shape[:-1])
+            num_tokens = math.prod(mask_shape[:-1])  # 静态模态，无空间维度
 
+        # 使用自定义或默认的编解码比率
         if encode_ratio is None:
             encode_ratio = self.encode_ratio
         if decode_ratio is None:
             decode_ratio = self.decode_ratio
 
-        encode_tokens = int(num_tokens * encode_ratio)
-        decode_tokens = int(num_tokens * decode_ratio)
-        target_tokens = int(num_tokens - (encode_tokens + decode_tokens))
+        # 计算各角色的 token 数量
+        encode_tokens = int(num_tokens * encode_ratio)  # 编码 token 数
+        decode_tokens = int(num_tokens * decode_ratio)  # 解码 token 数
+        target_tokens = int(num_tokens - (encode_tokens + decode_tokens))  # 目标编码器 token 数
+
+        # 创建扁平的掩码 token 序列
         flat_mask_tokens = torch.cat(
             [
                 torch.full(
@@ -150,19 +271,24 @@ class MaskingStrategy:
             ]
         )
 
+        # 随机打乱掩码值
         if modality.is_spatial or modality.is_multitemporal:
+            # 空间/时序模态：每个样本独立打乱
             masks = [
                 flat_mask_tokens[torch.randperm(num_tokens, device=device)]
                 for i in range(b)
             ]
             flat_mask_tokens = torch.stack(masks)
         else:
+            # 静态模态：整个批次共享一次打乱
             flat_mask_tokens = flat_mask_tokens[
                 torch.randperm(num_tokens, device=device)
             ]
 
+        # 重塑为掩码形状
         mask = flat_mask_tokens.view(*mask_shape)
         if modality.is_spatial:
+            # 空间模态：将 patch 级掩码扩展到像素级（同一 patch 内所有像素共享掩码值）
             mask = repeat(
                 mask, "b h w ... -> b (h hp) (w wp) ...", hp=patch_size, wp=patch_size
             )
@@ -232,12 +358,25 @@ class MaskingStrategy:
         return mask
 
 
+# 掩码策略注册表，用于通过字符串名称（如 "random", "space"）创建对应的掩码策略实例
 MASKING_STRATEGY_REGISTRY = ClassRegistry[MaskingStrategy]()
 
 
 @MASKING_STRATEGY_REGISTRY.register("time")
 class TimeMaskingStrategy(MaskingStrategy):
-    """Time structured random masking of the input data."""
+    """时间结构化随机掩码策略。
+
+    在时间维度上进行掩码，整个时间步的所有 token 共享相同的掩码值。
+    非时序数据（如静态模态）则使用随机掩码。
+    要求至少有 3 个有效时间步才能应用时间掩码。
+
+    适用场景：多时相遥感数据，掩码沿时间轴进行，
+    例如编码前几个时间步、解码后几个时间步。
+
+    关键属性:
+        _encode_ratio: 编码时间步比例
+        _decode_ratio: 解码时间步比例
+    """
 
     def __init__(
         self,
@@ -367,7 +506,19 @@ class TimeMaskingStrategy(MaskingStrategy):
 
 @MASKING_STRATEGY_REGISTRY.register("space")
 class SpaceMaskingStrategy(MaskingStrategy):
-    """Spatially structured random masking of the input data."""
+    """空间结构化随机掩码策略。
+
+    在 patch 化后的空间维度上进行掩码，整个 patch 的所有 token 共享相同的掩码值。
+    所有空间模态共享同一个空间掩码模式（确保跨模态的空间一致性）。
+    非空间数据则使用随机掩码。
+
+    适用场景：遥感影像数据，掩码在空间 patch 维度进行，
+    例如编码图像左半部分、解码右半部分。
+
+    关键属性:
+        _encode_ratio: 编码 patch 比例
+        _decode_ratio: 解码 patch 比例
+    """
 
     def __init__(
         self,
@@ -535,7 +686,14 @@ class SpaceMaskingStrategy(MaskingStrategy):
 
 @MASKING_STRATEGY_REGISTRY.register("space_time")
 class SpaceTimeMaskingStrategy(MaskingStrategy):
-    """Randomly select space or time masking and apply it to the input data."""
+    """空间-时间混合掩码策略。
+
+    每次以 50% 概率随机选择空间掩码或时间掩码。
+    若有效时间步不足 3 个，则强制使用空间掩码。
+
+    适用场景：同时包含空间和时间变化的遥感数据，
+    希望模型同时学习空间和时间维度的表征。
+    """
 
     def __init__(
         self,
@@ -568,7 +726,10 @@ class SpaceTimeMaskingStrategy(MaskingStrategy):
 
 @MASKING_STRATEGY_REGISTRY.register("random_space")
 class RandomSpaceMaskingStrategy(MaskingStrategy):
-    """Randomly select space or random masking."""
+    """随机-空间混合掩码策略。
+
+    每次以 50% 概率随机选择随机掩码或空间掩码。
+    """
 
     def __init__(
         self,
@@ -595,7 +756,23 @@ class RandomSpaceMaskingStrategy(MaskingStrategy):
 
 
 class ModalityCrossMaskingStrategy(MaskingStrategy):
-    """Abstract class for masking strategies that select a seperate set of bandsets to encode and decode on top of another masking strategy."""
+    """跨模态掩码策略的抽象基类。
+
+    在基础掩码策略（如空间/时间/随机掩码）之上，额外选择哪些波段集用于编码、
+    哪些用于解码。实现跨模态的信息流控制：某些模态的编码信息用于重建其他模态。
+
+    核心逻辑：
+    1. 先应用基础策略（如空间掩码）生成初始掩码
+    2. 根据各样本中存在的模态/波段集，选择编码集和解码集
+    3. 将非编码波段集的编码 token 降级为目标编码器 token
+    4. 将非解码波段集的解码 token 降级为目标编码器 token
+
+    关键属性:
+        strategy: 基础掩码策略
+        allow_encoding_decoding_same_bandset: 是否允许同一波段集同时被编码和解码
+        min/max_encoded_bandsets: 编码波段集数量的最小/最大值
+        only_decode_modalities: 仅用于解码的模态列表（永不编码）
+    """
 
     def __init__(
         self,
@@ -1131,7 +1308,18 @@ class ModalityCrossSpaceTimeMaskingStrategy(MaskingStrategy):
 
 @MASKING_STRATEGY_REGISTRY.register("random")
 class RandomMaskingStrategy(MaskingStrategy):
-    """Randomly masks the input data."""
+    """随机掩码策略。
+
+    对每个 token（或每个 patch）独立随机分配掩码值。
+    空间模态以 patch 为单位进行掩码，非空间模态在 token 级别掩码。
+    同一模态内的空间-时间变化数据和静态数据使用不同的掩码策略。
+
+    适用场景：最基础的掩码策略，适用于所有类型的预训练。
+
+    关键属性:
+        _encode_ratio: 编码 token 比例
+        _decode_ratio: 解码 token 比例
+    """
 
     def __init__(
         self,
@@ -1226,7 +1414,23 @@ class ModalityCrossRandomMaskingStrategy(ModalityCrossMaskingStrategy):
 
 @MASKING_STRATEGY_REGISTRY.register("random_increasing")
 class RandomIncreasingMaskingStrategy(RandomMaskingStrategy):
-    """Gradually increase the masked tokens (reduce encode ratio)."""
+    """逐步增加掩码比例的随机掩码策略。
+
+    训练过程中线性增加解码比率（减少编码比率），
+    从 initial_encode_ratio/final_encode_ratio 平滑过渡。
+    在达到 steps 步后，使用最终的编解码比率。
+
+    适用场景：课程学习（curriculum learning），
+    训练初期编码更多信息，后期逐渐增加需要重建的信息量。
+
+    关键属性:
+        initial_encode_ratio: 初始编码比率
+        final_encode_ratio: 最终编码比率
+        initial_decode_ratio: 初始解码比率
+        final_decode_ratio: 最终解码比率
+        steps: 过渡的总步数
+        elapsed: 已经过的步数
+    """
 
     def __init__(
         self,
@@ -2044,26 +2248,27 @@ def propagate_tokenization_config(
     masking_strategy: MaskingStrategy,
     tokenization_config: "TokenizationConfig",
 ) -> None:
-    """Attach the tokenization config to a masking strategy (recursively).
+    """将分组配置递归地附加到掩码策略及其子策略上。
 
-    Some masking strategies wrap other strategies (e.g., FixedModalityMaskingStrategy).
-    We need the tokenization config on every strategy instance so that mask shapes
-    match the model's band-grouping configuration.
+    某些掩码策略包装了其他策略（如 FixedModalityMaskingStrategy），
+    需要确保每个策略实例都有 tokenization_config，以便掩码形状与模型的
+    波段分组配置匹配。
 
     Args:
-        masking_strategy: The masking strategy to configure.
-        tokenization_config: The tokenization config to propagate.
+        masking_strategy: 要配置的掩码策略
+        tokenization_config: 要传播的分组配置
     """
-    visited: set[int] = set()
+    visited: set[int] = set()  # 防止循环引用导致无限递归
 
     def _set_config(strategy: MaskingStrategy) -> None:
         strategy_id = id(strategy)
         if strategy_id in visited:
-            return
+            return  # 已访问过，跳过
         visited.add(strategy_id)
 
-        strategy.tokenization_config = tokenization_config
+        strategy.tokenization_config = tokenization_config  # 设置当前策略的配置
 
+        # 递归设置子策略的配置
         for child in vars(strategy).values():
             if isinstance(child, MaskingStrategy):
                 _set_config(child)
@@ -2073,30 +2278,40 @@ def propagate_tokenization_config(
 
 @dataclass
 class MaskingConfig(Config):
-    """Configuration for masking strategies.
+    """掩码策略配置类。
+
+    通过 strategy_config 字典指定掩码策略类型和参数，
+    可选地提供 tokenization_config 以自定义波段分组。
 
     Args:
-        strategy_config: Masking strategy to use in the format of
-        {
-            "type": "random", # registry key
-            # rest of init kwargs
-        }
-        tokenization_config: Optional tokenization config for custom band groupings.
-            If provided, propagated to the masking strategy so mask shapes match
-            the model's band-grouping configuration.
+        strategy_config: 掩码策略配置字典，格式为：
+            {
+                "type": "random",  # 注册表中的策略名称
+                # 其余为策略的 __init__ 参数
+            }
+        tokenization_config: 可选的分组配置，用于自定义波段分组。
+            若提供，会递归传播到掩码策略的所有子策略上。
     """
 
-    strategy_config: dict[str, Any]
-    tokenization_config: "TokenizationConfig | None" = None
+    strategy_config: dict[str, Any]  # 策略配置字典
+    tokenization_config: "TokenizationConfig | None" = None  # 可选的分组配置
 
     def build(self) -> MaskingStrategy:
-        """Build a MaskingStrategy from the config."""
-        # Copy strategy_config since we pop from it
-        config = dict(self.strategy_config)
-        mask_strategy_key = config.pop("type")
-        strategy = MASKING_STRATEGY_REGISTRY.get_class(mask_strategy_key)(**config)
+        """从配置构建掩码策略实例。
 
-        # Propagate tokenization config if provided
+        从 strategy_config 中提取 "type" 键作为策略名称，
+        其余键值作为策略的初始化参数。若提供了 tokenization_config，
+        则递归传播到策略的所有子策略上。
+
+        Returns:
+            MaskingStrategy: 构建好的掩码策略实例
+        """
+        # 复制 strategy_config 因为我们需要 pop 操作
+        config = dict(self.strategy_config)
+        mask_strategy_key = config.pop("type")  # 提取策略名称
+        strategy = MASKING_STRATEGY_REGISTRY.get_class(mask_strategy_key)(**config)  # 从注册表创建实例
+
+        # 若提供了分组配置，递归传播到所有子策略
         if self.tokenization_config is not None:
             propagate_tokenization_config(strategy, self.tokenization_config)
 

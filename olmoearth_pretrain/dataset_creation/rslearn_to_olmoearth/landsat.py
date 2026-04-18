@@ -1,4 +1,8 @@
-"""Post-process ingested Landsat data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 Landsat 卫星数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 Landsat 多光谱卫星数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+Landsat 提供中分辨率的全球多光谱影像（30米分辨率）。
+"""
 
 import argparse
 import multiprocessing

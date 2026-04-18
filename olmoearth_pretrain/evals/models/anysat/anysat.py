@@ -1,4 +1,12 @@
-"""AnySat wrapper to ingest MaskedOlmoEarthSample."""
+"""AnySat 模型包装器，将输入转换为 MaskedOlmoEarthSample 格式。
+
+AnySat 是一种通用卫星基础模型，支持多种传感器和空间分辨率。
+本模块提供 AnySat 模型与 OlmoEarth 评估框架的集成。
+
+主要组件：
+- AnySat: AnySat 模型类
+- AnySatConfig: AnySat 配置数据类
+"""
 
 import logging
 from dataclasses import dataclass

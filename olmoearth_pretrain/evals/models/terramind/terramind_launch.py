@@ -1,4 +1,8 @@
-"""Trying to prototype fitting everything into olmo core."""
+"""Terramind 模型评估启动脚本。
+
+配置模型参数、数据加载器和评估流程，
+将 Terramind 模型集成到 OlmoEarth 评估框架中运行。
+"""
 
 import logging
 

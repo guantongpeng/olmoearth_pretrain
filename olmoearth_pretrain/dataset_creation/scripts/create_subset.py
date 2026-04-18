@@ -1,7 +1,7 @@
-"""Create a subset of an OlmoEarth-formatted dataset.
+"""创建 OlmoEarth 格式数据集的子集。
 
-Selects a random subset of tiles at a given resolution and copies their files
-across all modality directories, plus filters the summary CSVs to match.
+随机选择给定分辨率的瓦片子集，复制所有模态目录中的文件，
+并过滤汇总 CSV 以匹配子集。
 
 Usage:
     python -m olmoearth_pretrain.dataset_creation.scripts.create_subset \

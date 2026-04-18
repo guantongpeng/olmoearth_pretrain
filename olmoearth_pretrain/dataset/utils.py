@@ -1,4 +1,16 @@
-"""Utilities and base classes relating to the OlmoEarth Pretrain dataset structure."""
+"""OlmoEarth Pretrain 数据集结构相关的工具函数和基类。
+
+本模块提供数据集目录结构、窗口元数据和文件命名等基础工具，
+供 parse.py 和 convert_to_h5py.py 等模块使用。
+
+主要类:
+    WindowMetadata: rslearn 窗口元数据，包含 CRS、分辨率、行列号和时间
+
+主要函数:
+    get_modality_dir(): 获取模态数据的存储目录
+    list_examples_for_modality(): 列出模态可用的样本 ID
+    get_modality_fname(): 获取模态数据的文件名
+"""
 
 from datetime import datetime
 
@@ -12,10 +24,20 @@ from olmoearth_pretrain.data.constants import (
 
 
 class WindowMetadata:
-    """Class to represent the metadata associated with an rslearn window used for OlmoEarth Pretrain.
+    """rslearn 窗口元数据类，用于 OlmoEarth Pretrain 数据集。
 
-    The window name specifies the CRS, column, row, resolution, and timestamp.
-    These can also be derived from the rslearn window metadata.
+    窗口名称指定了 CRS、列号、行号、分辨率和时间戳。
+    这些信息也可以从 rslearn 窗口元数据中派生。
+
+    关键属性:
+        crs: UTM 坐标参考系统（如 EPSG:32610）
+        resolution: 窗口所在网格的分辨率
+        col: 瓦片在网格中的列号
+        row: 瓦片在网格中的行号
+        time: 瓦片使用的中心时间
+
+    使用场景:
+        在数据解析和转换过程中，用于标识和定位数据文件。
     """
 
     def __init__(
@@ -26,14 +48,14 @@ class WindowMetadata:
         row: int,
         time: datetime,
     ):
-        """Create a new WindowMetadata.
+        """创建新的 WindowMetadata 实例。
 
         Args:
-            crs: the UTM CRS that the example is in.
-            resolution: the resolution of the grid that this window is on.
-            col: the column of the tile in the grid.
-            row: the row of the tile in the grid.
-            time: the center time used at this tile.
+            crs: 样本所在的 UTM 坐标参考系统
+            resolution: 窗口所在网格的分辨率
+            col: 瓦片在网格中的列号
+            row: 瓦片在网格中的行号
+            time: 瓦片使用的中心时间
         """
         self.crs = crs
         self.resolution = resolution
@@ -42,27 +64,34 @@ class WindowMetadata:
         self.time = time
 
     def get_window_name(self) -> str:
-        """Encode the metadata back to a window name."""
+        """将元数据编码回窗口名称字符串。
+
+        Returns:
+            str: 格式为 "{crs}_{resolution}_{col}_{row}" 的窗口名称
+        """
         return f"{self.crs}_{self.resolution}_{self.col}_{self.row}"
 
     def get_resolution_factor(self) -> int:
-        """Get the resolution factor.
+        """获取分辨率因子，即分辨率相对于 BASE_RESOLUTION 的倍数。
 
-        See helios.data.constants.
+        参考 olmoearth_pretrain.data.constants 中的定义。
+
+        Returns:
+            int: 分辨率因子
         """
         return round(self.resolution / BASE_RESOLUTION)
 
 
 def get_modality_dir(path: UPath, modality: ModalitySpec, time_span: TimeSpan) -> UPath:
-    """Get the directory where data should be stored for the specified modality.
+    """获取指定模态数据的存储目录路径。
 
     Args:
-        path: the OlmoEarth Pretrain dataset root.
-        modality: the modality.
-        time_span: the time span, which determines suffix of directory name.
+        path: OlmoEarth Pretrain 数据集根路径
+        modality: 模态规格
+        time_span: 时间跨度，决定目录名后缀
 
     Returns:
-        directory within path to store the modality.
+        UPath: 模态数据存储目录的完整路径
     """
     suffix = time_span.get_suffix()
     dir_name = f"{modality.get_tile_resolution()}_{modality.name}{suffix}"
@@ -72,24 +101,23 @@ def get_modality_dir(path: UPath, modality: ModalitySpec, time_span: TimeSpan) -
 def list_examples_for_modality(
     path: UPath, modality: ModalitySpec, time_span: TimeSpan
 ) -> list[str]:
-    """List the example IDs available for the specified modality.
+    """列出指定模态可用的样本 ID。
 
-    This is determined by listing the contents of the modality directory. Index and
-    metadata CSVs are not used.
+    通过列出模态目录内容来确定可用的样本，不使用索引和元数据 CSV。
 
     Args:
-        path: the OlmoEarth Pretrain dataset root.
-        modality: the modality to check.
-        time_span: the time span to check.
+        path: OlmoEarth Pretrain 数据集根路径
+        modality: 要检查的模态
+        time_span: 要检查的时间跨度
 
     Returns:
-        a list of example IDs
+        list[str]: 样本 ID 列表
     """
     modality_dir = get_modality_dir(path, modality, time_span)
     if not modality_dir.exists():
         return []
 
-    # We just list the directory and strip the extension.
+    # 列出目录内容并去除扩展名，获取样本 ID
     example_ids = []
     for fname in modality_dir.iterdir():
         example_ids.append(fname.name.split(".")[0])
@@ -104,19 +132,20 @@ def get_modality_fname(
     resolution: float,
     ext: str,
 ) -> UPath:
-    """Get the filename where to store data for the specified window and modality.
+    """获取指定窗口和模态的数据存储文件名。
+
+    文件名格式为: {modality_dir}/{crs}_{col}_{row}_{resolution}.{ext}
 
     Args:
-        path: the OlmoEarth Pretrain dataset root.
-        modality: the modality.
-        time_span: the time span of this data.
-        window_metadata: details extracted from the window name.
-        resolution: the resolution of this band. This should be a power of 2 multiplied
-            by the window resolution.
-        ext: the filename extension, like "tif" or "geojson".
+        path: OlmoEarth Pretrain 数据集根路径
+        modality: 模态规格
+        time_span: 数据的时间跨度
+        window_metadata: 从窗口名称提取的元数据
+        resolution: 波段的分辨率，应为窗口分辨率乘以2的幂次
+        ext: 文件扩展名，如 "tif" 或 "geojson"
 
     Returns:
-        the filename to store the data in.
+        UPath: 数据存储的完整文件路径
     """
     modality_dir = get_modality_dir(path, modality, time_span)
     crs = window_metadata.crs

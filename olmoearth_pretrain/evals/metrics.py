@@ -1,4 +1,20 @@
-"""Eval metrics."""
+"""评估指标模块。
+
+本模块定义了所有评估流程中使用的指标类型和计算函数，支持分类和分割两大任务类型。
+
+主要组件：
+- EvalMetric: 评估指标枚举（accuracy, f1, miou, overall_acc 等）
+- SEGMENTATION_IGNORE_LABEL: 分割任务中忽略的标签值 (-1)
+- EvalTaskResult: 单个任务的评估结果容器（验证/测试结果 + bootstrap 统计）
+- EvalResult: 评估结果数据类，支持多指标存储和主指标选择
+- classification_metrics: 分类指标计算函数
+- segmentation_metrics: 分割指标计算函数（mIoU, overall_acc, macro_acc, macro_f1）
+- _build_confusion_matrix: 从预测和标签构建混淆矩阵
+
+使用场景：
+  在线性探针或 KNN 评估后，调用对应指标计算函数获取 EvalResult，
+  支持通过 primary_metric 参数指定主指标用于模型选择。
+"""
 
 from __future__ import annotations
 

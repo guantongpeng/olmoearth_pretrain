@@ -1,4 +1,19 @@
-"""Alternate Encoder Predictor pairs that allow for tokens to be pooled at different stages of the model and then the decoding to happen from the pooled tokens."""
+"""基于池化模态的编码器-预测器模块。
+
+本模块实现了另一种编码器-预测器架构，允许 token 在模型的
+不同阶段被池化，然后从池化后的 token 进行解码。
+
+主要组件：
+- DimsToPool: 池化维度枚举（模态/时间/空间/全部）
+- AttnPool: 多查询注意力池化层（带门控平均）
+- EncodeEarlyAttnPool: 带早期注意力池化的编码器
+- PooledModalityPredictor: 基于池化模态的预测器
+
+设计思路：
+- 在编码器的中间层对 token 进行注意力池化
+- 池化后的 token 作为解码器的上下文信息
+- 这种设计可以在保持计算效率的同时，提供更丰富的跨模态信息
+"""
 
 import logging
 from dataclasses import dataclass
@@ -30,7 +45,14 @@ logger = logging.getLogger(__name__)
 
 
 class DimsToPool(StrEnum):
-    """Dimensions to pool over."""
+    """池化维度枚举，指定在哪些维度上进行池化。
+
+    - MODALITY: 仅在模态维度池化
+    - TEMPORAL: 仅在时间维度池化
+    - SPATIAL: 仅在空间维度池化
+    - MODALITY_TEMPORAL: 在模态和时间维度同时池化
+    - ALL: 在所有维度池化
+    """
 
     MODALITY = "modality"  # 1
     TEMPORAL = "temporal"  # 2
@@ -41,14 +63,34 @@ class DimsToPool(StrEnum):
 
 @experimental()
 class AttnPool(nn.Module):
-    """Multi-query attention pooling with gated averaging.
+    """多查询注意力池化层，带门控平均。
+
+    使用可学习的查询 token 通过交叉注意力从输入 token 中提取信息，
+    然后通过门控机制（softmax 加权）混合多个查询的输出。
+
+    核心流程：
+    1. 查询 token 通过交叉注意力从输入 KV 中提取信息
+    2. 若有多个查询，通过门控线性层计算混合权重
+    3. 可选 MLP 头进一步处理池化结果
+
+    关键属性：
+        query_tokens: 可学习的查询 token
+        kv: 共享的键值投影层
+        gate: 门控线性层（多查询时使用）
+        out_layer: 输出 MLP 层
+        out_proj: 输出投影层（维度不匹配时使用）
 
     Args:
-        in_dim (int): token dim (must be divisible by 64; head_dim=64).
-        hidden_dim (int): MLP hidden/out dim (defaults to in_dim unless mlp_ratio provided).
-        mlp_ratio (float|None): if set, hidden_dim := int(in_dim * mlp_ratio)
-        num_queries (int): number of learned queries per (t,s) group.
-        gate_temperature (float): temperature for softmax gating (>0).
+        in_dim: 输入 token 维度（必须能被 64 整除）
+        attn_dim: 注意力维度（默认等于 in_dim）
+        hidden_dim: MLP 隐藏维度
+        mlp_ratio: MLP 扩展比率
+        num_queries: 查询 token 数量
+        num_heads: 注意力头数
+        gate_temperature: 门控 softmax 温度
+        use_mlp: 是否使用 MLP 输出头
+
+    注意：此类标记为 @experimental()，API 可能变更。
     """
 
     def __init__(
@@ -173,7 +215,18 @@ class AttnPool(nn.Module):
 
 @experimental()
 class EncodeEarlyAttnPool(Encoder):
-    """Encoder that pools the tokens across modalities."""
+    """带早期注意力池化的编码器，在模态维度上池化 token。
+
+    在编码器的前几层执行标准自注意力，然后在指定维度上进行
+    注意力池化，池化后的 token 继续通过剩余的注意力层。
+
+    关键属性：
+        attn_pool: 注意力池化层
+        dims_to_pool: 池化维度
+        num_pre_modality_pooling_layers: 池化前的注意力层数
+
+    注意：此类标记为 @experimental()，API 可能变更。
+    """
 
     def __init__(
         self,
@@ -681,7 +734,14 @@ class EncodeEarlyAttnPool(Encoder):
 
 @dataclass
 class EncoderEarlyAttnPoolConfig(EncoderConfig):
-    """Configuration for the EncoderAttnPool."""
+    """带早期注意力池化的编码器配置类。
+
+    扩展了标准 EncoderConfig，添加了注意力池化相关参数：
+        dims_to_pool: 池化维度
+        num_queries: 注意力池化的查询数量
+        attn_pool_mlp_ratio: 注意力池化 MLP 扩展比率
+        num_pre_modality_pooling_layers: 池化前的注意力层数
+    """
 
     dims_to_pool: DimsToPool = DimsToPool.MODALITY
     num_queries: int = 1
@@ -704,7 +764,17 @@ class EncoderEarlyAttnPoolConfig(EncoderConfig):
 
 @experimental()
 class PooledModalityPredictor(PredictorBase):
-    """Predictor that pools the tokens across modalities."""
+    """基于池化模态的预测器，从池化后的 token 进行解码。
+
+    与标准预测器不同，此预测器使用编码器端注意力池化后的 token
+    作为交叉注意力的上下文，而非原始的未掩码 token。
+
+    关键属性：
+        include_encoder_encodings: 是否在池化 token 上添加编码器编码
+        dims_to_pool: 池化维度
+
+    注意：此类标记为 @experimental()，API 可能变更。
+    """
 
     def __init__(
         self,
@@ -895,7 +965,12 @@ class PooledModalityPredictor(PredictorBase):
 
 @dataclass
 class PooledModalityPredictorConfig(PredictorConfig):
-    """Configuration for the PooledModalityPredictor."""
+    """基于池化模态的预测器配置类。
+
+    扩展了标准 PredictorConfig，添加了：
+        include_encoder_encodings: 是否包含编码器编码
+        dims_to_pool: 池化维度
+    """
 
     include_encoder_encodings: bool = True
     dims_to_pool: DimsToPool = DimsToPool.MODALITY

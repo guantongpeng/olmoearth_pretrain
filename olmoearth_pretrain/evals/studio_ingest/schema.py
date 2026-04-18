@@ -1,20 +1,20 @@
-"""Schema definitions for the eval dataset registry.
+"""评估数据集注册表的模式定义。
 
-This module defines schema models that represent dataset registry entries
-(EvalDatasetEntry), serialized to JSON and stored on Weka alongside the dataset.
+本模块定义了数据集注册表条目的 Pydantic 模型 (EvalDatasetEntry)，
+序列化为 JSON 并存储在 Weka 上。
 
-Design Decisions:
------------------
-- We use pydantic models for validation and serialization
-- All fields are explicitly typed for clarity
-- Optional fields use None as default
-- Timestamps are ISO 8601 strings for human readability
-- Paths are stored as strings (not UPath) for JSON compatibility
+设计决策：
+- 使用 Pydantic 模型进行验证和序列化
+- 所有字段显式类型化
+- 可选字段使用 None 默认值
+- 时间戳为 ISO 8601 字符串（便于阅读）
+- 路径存储为字符串（兼容 JSON）
 
-Future Considerations:
----------------------
-- May want to add versioning to schema for backwards compatibility
-- May want to support additional task types (detection, etc.)
+主要组件：
+- EvalDatasetEntry: 数据集注册表条目 Pydantic 模型
+- rslearn_task_type_to_olmoearth_task_type: rslearn 任务类型映射
+- instantiate_from_config: 从 class_path + init_args 配置实例化类
+- rslearn_to_olmoearth: rslearn 层名到 OlmoEarth ModalitySpec 的映射
 """
 
 from __future__ import annotations

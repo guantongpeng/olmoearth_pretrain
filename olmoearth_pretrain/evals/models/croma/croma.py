@@ -1,4 +1,13 @@
-"""OlmoEarth Pretrain wrapper for CROMA."""
+"""CROMA 遥感基础模型与 OlmoEarth Pretrain 的集成包装器。
+
+CROMA (Contrastive Remote sensing Model Architecture) 是一种
+基于对比学习的遥感基础模型，支持多种尺寸变体。
+
+主要组件：
+- Croma: CROMA 模型类
+- CromaConfig: CROMA 配置数据类
+- CROMA_SIZES: 可用尺寸列表
+"""
 
 import logging
 import math

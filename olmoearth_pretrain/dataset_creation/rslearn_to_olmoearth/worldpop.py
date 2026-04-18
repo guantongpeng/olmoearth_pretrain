@@ -1,4 +1,8 @@
-"""Post-process ingested WorldPop data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 WorldPop 人口数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 WorldPop 数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+WorldPop 提供全球人口分布栅格数据（约 100 米分辨率）。
+"""
 
 import argparse
 import csv

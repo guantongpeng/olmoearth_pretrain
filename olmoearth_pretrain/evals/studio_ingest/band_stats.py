@@ -1,16 +1,19 @@
-"""Compute band stats from rslearn dataset.
+"""从 rslearn 数据集计算波段统计量。
 
-This module computes per-band normalization statistics (mean, std, min, max)
-for rslearn datasets. These stats are used for dataset-specific normalization
-during evaluation.
+本模块计算 rslearn 数据集的逐波段归一化统计量（均值、标准差、最小值、最大值），
+用于评估时的数据集特定归一化。
 
-Key features:
-- Uses the same dataset builder as eval (rslearn_builder.py)
-- Handles variable timesteps (infers from data shape)
-- GPU acceleration when available
-- Optional sampling for large datasets
+核心功能：
+- 使用与评估相同的数据集构建器 (rslearn_builder.py)
+- 处理可变时间步长（从数据形状推断）
+- 支持 GPU 加速
+- 可选采样以处理大规模数据集
 
-Usage as library:
+主要函数：
+- compute_band_stats: 从数据集计算逐波段统计量
+- compute_band_stats_from_model_config: 通过 model.yaml 配置计算统计量
+
+使用示例：
     from olmoearth_pretrain.evals.studio_ingest.band_stats import (
         compute_band_stats_from_model_config,
     )

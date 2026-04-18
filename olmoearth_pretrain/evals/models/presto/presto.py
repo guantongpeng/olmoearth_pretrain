@@ -1,4 +1,12 @@
-"""Presto wrapper to ingest Masked OlmoEarth Pretrain Samples."""
+"""Presto 模型包装器，将输入转换为 MaskedOlmoEarthSample 格式。
+
+Presto 是一种基于时间序列的遥感基础模型，支持多时相数据。
+本模块提供 Presto 模型与 OlmoEarth 评估框架的集成。
+
+主要组件：
+- PrestoWrapper: Presto 模型包装器类
+- PrestoConfig: Presto 配置数据类
+"""
 
 import logging
 from dataclasses import dataclass

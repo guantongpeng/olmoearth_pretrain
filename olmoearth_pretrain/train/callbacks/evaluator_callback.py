@@ -1,3 +1,24 @@
+"""
+下游任务评估回调模块。
+
+本模块实现训练过程中的定期下游任务评估，支持多种评估模式：
+- KNN: K近邻评估，基于嵌入的最近邻分类
+- LINEAR_PROBE: 线性探针评估，训练线性分类器
+- FINETUNE: 微调评估，端到端微调模型
+- EMBEDDING_DIAGNOSTICS: 嵌入诊断，计算嵌入质量指标
+
+评估流程：
+1. 使用预训练模型提取下游数据集的嵌入
+2. 根据评估模式执行相应的评估方法
+3. 记录评估结果到训练日志和 W&B
+4. 支持自举采样（bootstrap）进行不确定性估计
+
+关键类：
+- DownstreamTaskConfig: 下游任务配置
+- DownstreamEvaluator: 下游评估器
+- DownstreamEvaluatorCallback: 训练中定期触发的评估回调
+"""
+
 """Downstream evaluator callback."""
 
 import gc
@@ -59,7 +80,13 @@ def _seed_worker(worker_id: int, base_seed: int) -> None:
 
 
 class EvalMode(StrEnum):
-    """Eval mode."""
+    """评估模式枚举。
+
+    KNN: K近邻评估
+    LINEAR_PROBE: 线性探针评估
+    FINETUNE: 微调评估
+    EMBEDDING_DIAGNOSTICS: 嵌入诊断
+    """
 
     KNN = "knn"
     LINEAR_PROBE = "linear_probe"
@@ -69,7 +96,20 @@ class EvalMode(StrEnum):
 
 @dataclass
 class DownstreamTaskConfig:
-    """Config for a downstream task."""
+    """下游任务配置。
+
+    包含评估一个下游任务所需的所有参数，包括数据集、评估模式、
+    训练超参数（学习率、批次大小、训练轮数等）和特殊选项
+    （嵌入量化、PCA降维、Dice损失等）。
+
+    关键属性:
+        dataset: 数据集名称
+        eval_mode: 评估模式（KNN/LP/FT/嵌入诊断）
+        patch_size: patch 大小
+        pooling_type: 池化类型
+        embedding_batch_size: 嵌入提取的批次大小
+        epochs: 训练轮数（LP/FT）
+    """
 
     dataset: str
     num_workers: int = 8
@@ -124,7 +164,20 @@ class DownstreamTaskConfig:
 
 
 class DownstreamEvaluator:
-    """Evaluator for downstream tasks."""
+    """下游任务评估器。
+
+    管理单个下游任务的评估流程，包括：
+    - 嵌入提取（使用预训练编码器）
+    - KNN / 线性探针 / 微调评估
+    - 嵌入诊断
+    - 评估结果记录
+
+    关键属性:
+        evaluation_name: 评估名称（用于日志和 W&B）
+        config: 数据集配置
+        eval_mode: 评估模式
+        eval_function: 评估函数（KNN 或线性探针）
+    """
 
     def __init__(
         self,
@@ -608,7 +661,19 @@ def _record_eval_result(
 
 @dataclass
 class DownstreamEvaluatorCallback(Callback):
-    """Runs in-loop evaluations periodically during training."""
+    """训练中的定期下游评估回调。
+
+    在训练过程中按指定间隔（eval_interval）对配置的下游任务执行评估，
+    支持在训练启动时立即评估（eval_on_startup）和评估后取消训练
+    （cancel_after_first_eval，用于仅运行评估的场景）。
+
+    关键属性:
+        evaluators: 评估器列表
+        eval_on_startup: 是否在训练开始时立即评估
+        cancel_after_first_eval: 是否在首次评估后取消训练
+        run_on_test: 是否在测试集上评估
+        n_bootstrap: 自举采样次数（用于不确定性估计）
+    """
 
     evaluators: list[DownstreamEvaluator] = field(default_factory=list)
     eval_on_startup: bool = False
@@ -860,7 +925,21 @@ class DownstreamEvaluatorCallback(Callback):
 
 @dataclass
 class DownstreamEvaluatorCallbackConfig(CallbackConfig):
-    """Config for the downstream evaluator callback."""
+    """下游评估回调配置。
+
+    从任务配置字典构建 DownstreamEvaluatorCallback 实例，
+    支持按名称筛选任务（tasks_to_run）和按评估模式筛选
+    （filter_for_eval_mode）。
+
+    关键属性:
+        tasks: 任务名称到配置的映射字典
+        enabled: 是否启用评估
+        eval_on_startup: 是否在训练开始时评估
+        cancel_after_first_eval: 是否在首次评估后取消
+        tasks_to_run: 要运行的任务名称列表（None 表示全部运行）
+        filter_for_eval_mode: 按评估模式筛选
+        n_bootstrap: 自举采样次数
+    """
 
     tasks: dict[str, DownstreamTaskConfig]
     enabled: bool = True

@@ -1,4 +1,8 @@
-"""Post-process ingested NAIP data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 NAIP_10（10米分辨率 NAIP）数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 NAIP_10 数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+NAIP_10 是 NAIP 的 10 米分辨率重采样版本，用于与中等分辨率数据对齐。
+"""
 
 import argparse
 import csv

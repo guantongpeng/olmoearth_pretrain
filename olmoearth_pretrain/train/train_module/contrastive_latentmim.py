@@ -1,3 +1,17 @@
+"""
+对比学习 + Latent MIM 联合训练模块。
+
+本模块实现对比学习与 Latent MIM 的联合训练，支持双视角数据增强。
+
+训练流程：
+1. 接收两个数据视角（sample_a, sample_b），分别经过独立的模型前向传播
+2. 两个视角各自计算 Latent MIM 损失（判别损失）
+3. 若配置了对比损失，对两个视角的池化表示计算对比损失（如 InfoNCE）
+4. 总损失 = (loss_a + loss_b) / 2 + contrastive_loss + regularization
+
+适用场景：需要同时学习实例级对比表征和 patch 级判别表征的预训练。
+"""
+
 """Training and optimizer abstraction for OlmoEarth Pretrain."""
 
 from dataclasses import dataclass, field
@@ -77,9 +91,21 @@ class ContrastiveLatentMIMTrainModuleConfig(OlmoEarthTrainModuleConfig):
 
 
 class ContrastiveLatentMIMTrainModule(OlmoEarthTrainModule):
-    """A :class:`TrainModule`.
+    """对比学习 + Latent MIM 联合训练模块。
 
-    Initialize the training module.
+    支持双视角（sample_a, sample_b）的联合训练：
+    - 两个视角各自计算 Latent MIM 判别损失
+    - 可选的对比损失连接两个视角的池化表示
+    - 可选的 MAE 重建损失和正则化损失
+    - 支持目标编码器随机初始化（reinit_targets）
+
+    关键属性:
+        base_loss: 基础判别损失
+        mae_loss: 可选的 MAE 重建损失
+        masking_strategy: 掩码策略
+        contrastive_loss: 可选的对比损失（如 InfoNCE）
+        regularizer: 可选的正则化项
+        start_ema / end_ema: EMA 衰减率的起止值
     """
 
     def __init__(

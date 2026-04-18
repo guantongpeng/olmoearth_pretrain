@@ -1,4 +1,8 @@
-"""Create new dataset by adding windows neighboring windows in an existing dataset."""
+"""通过添加现有数据集中窗口的邻居窗口来创建新数据集，并移除重复经纬度。
+
+本脚本在添加邻居窗口的同时，识别并移除具有重复经纬度坐标的窗口，
+确保数据集中样本位置的唯一性。
+"""
 
 import argparse
 import json

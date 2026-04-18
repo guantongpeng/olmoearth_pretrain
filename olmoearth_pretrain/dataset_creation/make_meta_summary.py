@@ -1,4 +1,8 @@
-"""Concatenate the metadata files for one modality."""
+"""合并单个模态的元数据文件。
+
+本脚本将数据集中同一模态的多个元数据 CSV 文件合并为一个汇总文件，
+用于数据集的索引和查询。
+"""
 
 import argparse
 import csv

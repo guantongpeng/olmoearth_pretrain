@@ -1,4 +1,12 @@
-"""DINOv3 model https://github.com/facebookresearch/dinov3 ."""
+"""DINOv3 模型集成。https://github.com/facebookresearch/dinov3
+
+DINOv3 是 Meta 的自监督视觉基础模型，本模块提供 DINOv3 与
+OlmoEarth 评估框架的集成，支持多种模型尺寸。
+
+主要组件：
+- DINOv3: DINOv3 模型类
+- DINOv3Config: DINOv3 配置数据类
+"""
 
 import logging
 import math

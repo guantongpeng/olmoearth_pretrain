@@ -1,4 +1,8 @@
-"""Post-process ingested NAIP data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 NAIP 航拍影像数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 NAIP（国家农业影像计划）数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+NAIP 提供美国高分辨率（0.6米）航拍影像。
+"""
 
 import argparse
 import csv

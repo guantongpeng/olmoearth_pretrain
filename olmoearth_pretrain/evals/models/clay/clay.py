@@ -1,4 +1,12 @@
-"""OlmoEarth Pretrain wrapper for clay."""
+"""Clay 遥感基础模型与 OlmoEarth Pretrain 的集成包装器。
+
+Clay 是一种用于地球观测的预训练基础模型。
+本模块提供 Clay 模型与 OlmoEarth 评估框架的集成。
+
+主要组件：
+- Clay: Clay 模型类
+- ClayConfig: Clay 配置数据类
+"""
 
 import logging
 import math

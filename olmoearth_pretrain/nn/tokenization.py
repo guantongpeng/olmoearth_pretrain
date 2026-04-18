@@ -1,14 +1,18 @@
-"""Tokenization configuration for custom band grouping strategies.
+"""分词配置模块，用于自定义波段分组策略。
 
-This module allows customizing how bands are grouped into tokens for each modality,
-enabling experiments with different tokenization strategies (e.g., per-band tokens,
-spectral groupings, etc.).
+本模块允许为每种模态自定义波段（band）如何分组为 token，
+支持不同的分词策略实验（如逐波段 token、光谱分组等）。
 
-Example:
+核心概念：
+- band_group: 一组波段名称，作为一个 token 输入
+- ModalityTokenization: 单个模态的分词配置
+- TokenizationConfig: 全局分词配置，支持对特定模态的覆盖
+
+使用示例：
     >>> from olmoearth_pretrain.nn.tokenization import TokenizationConfig, ModalityTokenization
     >>> from olmoearth_pretrain.data.constants import Modality
     >>>
-    >>> # Create config with per-band tokenization for Sentinel-2
+    >>> # 为 Sentinel-2 创建逐波段分词配置
     >>> s2_bands = Modality.SENTINEL2_L2A.band_order
     >>> config = TokenizationConfig(
     ...     overrides={
@@ -18,7 +22,7 @@ Example:
     ...     }
     ... )
     >>>
-    >>> # Use default tokenization for other modalities
+    >>> # 其他模态使用默认分词
     >>> num_bandsets = config.get_num_bandsets(Modality.SENTINEL1.name)
 """
 
@@ -30,13 +34,17 @@ from olmoearth_pretrain.data.constants import Modality, ModalitySpec
 
 @dataclass
 class ModalityTokenization(Config):
-    """Custom tokenization configuration for a single modality.
+    """单个模态的自定义分词配置。
 
-    Specifies how bands should be grouped into tokens. Each band_group
-    becomes a separate token.
+    指定波段如何分组为 token，每个 band_group 成为一个独立的 token。
+    例如，Sentinel-2 有 12 个波段，可以：
+    - 所有波段作为一组（1 个 token）
+    - 每个波段作为一组（12 个 token）
+    - 按光谱范围分组（如可见光、近红外、短波红外）
 
     Args:
-        band_groups: List of band groups, where each group is a list of band names.
+        band_groups: 波段分组列表，每个分组是波段名称列表。
+            例如 [["B04", "B03", "B02"], ["B08"], ["B11", "B12"]]
     """
 
     band_groups: list[list[str]]
@@ -97,11 +105,14 @@ class ModalityTokenization(Config):
 
 @dataclass
 class TokenizationConfig(Config):
-    """Configuration for custom tokenization strategies.
+    """全局分词配置，支持对特定模态的覆盖。
 
-    Allows overriding the default bandset groupings for specific modalities.
-    Modalities without overrides use their default bandset configuration
-    from ModalitySpec.
+    未被 overrides 覆盖的模态使用其 ModalitySpec 中的默认 bandset 配置。
+    被覆盖的模态使用自定义的 ModalityTokenization 配置。
+
+    关键属性：
+        overrides: 模态名称到 ModalityTokenization 的映射字典
+        _bandset_indices_cache: 波段集索引的缓存（避免重复计算）
     """
 
     overrides: dict[str, ModalityTokenization] = field(default_factory=dict)

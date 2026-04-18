@@ -1,3 +1,25 @@
+"""
+Galileo 训练模块。
+
+本模块实现 Galileo 预训练方法的训练逻辑，是 OlmoEarth 的核心训练方法。
+
+训练流程：
+1. 接收两个数据视角（sample_a, sample_b），使用不同的掩码策略
+2. 两个视角分别经过模型前向传播，获得各自的编码/解码/池化表示
+3. 两个视角各自计算判别损失（loss_a, loss_b），使用独立的损失函数
+4. 若配置了对比损失，对两个视角的池化表示计算对比损失
+5. 总损失 = (loss_a + loss_b) / 2 + contrastive_loss + regularization
+6. 可选的 MAE 重建损失
+
+关键特点：
+- 双掩码策略（masking_strategy_a, masking_strategy_b）允许不同视角使用不同掩码
+- 双损失函数（loss_config_a, loss_config_b）允许不同视角使用不同损失
+- 对比损失连接两个视角的实例级表示
+- 支持目标编码器 EMA 更新
+
+参考：Galileo 论文 - 基于双视角掩码的地球观测基础模型预训练
+"""
+
 """Training and optimizer abstraction for OlmoEarth Pretrain."""
 
 from dataclasses import dataclass, field
@@ -84,30 +106,22 @@ class GalileoTrainModuleConfig(OlmoEarthTrainModuleConfig):
 
 
 class GalileoTrainModule(OlmoEarthTrainModule):
-    """A :class:`TrainModule`.
+    """Galileo 训练模块。
 
-    Initialize the training module.
+    实现双视角掩码预训练逻辑：
+    - 两个视角使用独立的掩码策略和损失函数
+    - 两个视角各自计算判别损失
+    - 可选的对比损失连接两个视角的池化表示
+    - 可选的 MAE 重建损失和正则化损失
+    - 目标编码器通过 EMA 更新
 
-    Args:
-        model: The transformer model to train.
-        optim: The corresponding optimizer config.
-        masking_config_a: The masking configuration for the model.
-        masking_config_b: The masking configuration for the model.
-        loss_config_a: The loss configuration for the model.
-        loss_config_b: The loss configuration for the model.
-        rank_microbatch_size: The rank microbatch size in instances.
-        compile_model: Whether to compile to the model.
-        dp_config: Data parallel configuration for the model.
-        mae_loss_config: Optional loss config for masked auto-encoding.
-        compile_loss: Whether to compile the loss function.
-        autocast_precision: Enable AMP with this data type.
-        max_grad_norm: Clip gradient norms to this value.
-        scheduler: Optional learning rate scheduler.
-        device: The device to train on.
-        state_dict_save_opts: Override state dict options for saving.
-        state_dict_load_opts: Override state dict options for loading.
-        token_exit_cfg_a: The token exit configuration for the model.
-        token_exit_cfg_b: The token exit configuration for the model.
+    关键属性:
+        base_loss_a / base_loss_b: 两个视角的判别损失
+        masking_strategy_a / masking_strategy_b: 两个视角的掩码策略
+        mae_loss: 可选的 MAE 重建损失
+        contrastive_loss: 可选的对比损失
+        regularizer: 可选的正则化项
+        start_ema / end_ema: EMA 衰减率的起止值
     """
 
     def __init__(

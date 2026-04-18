@@ -1,4 +1,12 @@
-"""Tessera foundation model https://github.com/ucam-eo/tessera ."""
+"""Tessera 遥感基础模型集成。https://github.com/ucam-eo/tessera
+
+Tessera 是剑桥大学开发的遥感基础模型，
+本模块提供 Tessera 与 OlmoEarth 评估框架的集成。
+
+主要组件：
+- Tessera: Tessera 模型类
+- TesseraConfig: Tessera 配置数据类
+"""
 
 import logging
 import os

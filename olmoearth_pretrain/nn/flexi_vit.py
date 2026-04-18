@@ -1,4 +1,34 @@
-"""Model code for the OlmoEarth Pretrain model."""
+"""OlmoEarth Pretrain 的核心 FlexiViT 模型代码。
+
+本模块实现了基于 FlexiViT 架构的多模态遥感基础模型，是整个项目最核心的模块。
+FlexiViT 的核心特性是支持灵活的 patch 大小，允许在推理时动态调整分辨率，
+而无需重新训练模型。
+
+主要组件：
+├── 工具函数
+│   ├── get_modalities_to_process: 获取可用与支持的模态交集
+│   └── return_modalities_from_dict: 从字典中提取模态名称
+├── ProjectAndAggregate: 线性投影 + 池化模块（用于对比学习）
+├── MultiModalPatchEmbeddings: 多模态 Patch 嵌入层
+├── Reconstructor: Patch 重建模块（MAE 解码头）
+├── CompositeEncodings: 复合位置编码（时间+空间+月份+通道）
+├── FlexiVitBase: FlexiViT 基类（提供通用注意力逻辑）
+├── Encoder: 编码器（处理掩码输入，提取 token 表示）
+├── PredictorBase/Predictor: 预测器（从编码 token 预测掩码 token）
+└── EncoderConfig/PredictorConfig: 对应的配置类
+
+架构概述：
+    输入 → Patch嵌入 → 位置编码 → Transformer块×N → LayerNorm → 投影/池化
+
+支持的特性：
+    - 多模态输入（Sentinel-1/2、DEM、LandSAT 等）
+    - 灵活 patch 大小（通过插值调整卷积核）
+    - Flash Attention（支持变长序列）
+    - Register Token（提升注意力质量）
+    - Band Dropout（随机丢弃光谱通道，增强跨光谱学习）
+    - FSDP 分布式训练
+    - torch.compile 加速
+"""
 
 import logging
 import math
@@ -42,7 +72,15 @@ logger = logging.getLogger(__name__)
 def get_modalities_to_process(
     available_modalities: list[str], supported_modality_names: list[str]
 ) -> list[str]:
-    """Get the modalities to process."""
+    """获取实际需要处理的模态列表（可用模态与支持模态的交集）。
+
+    Args:
+        available_modalities: 当前输入数据中可用的模态名称列表
+        supported_modality_names: 模型配置中支持的模态名称列表
+
+    Returns:
+        交集模态名称列表
+    """
     modalities_to_process = set(supported_modality_names).intersection(
         set(available_modalities)
     )
@@ -52,7 +90,16 @@ def get_modalities_to_process(
 def return_modalities_from_dict(
     per_modality_input_tokens: dict[str, Tensor],
 ) -> list[str]:
-    """Return the modalities from a dictionary of per modality input tokens."""
+    """从模态字典中提取非掩码的模态名称列表。
+
+    通过排除以 "_mask" 结尾的键，仅返回实际的模态名称。
+
+    Args:
+        per_modality_input_tokens: 模态名称到张量的映射字典
+
+    Returns:
+        不含掩码键的模态名称列表
+    """
     return [
         key for key in per_modality_input_tokens.keys() if not key.endswith("_mask")
     ]
@@ -63,7 +110,20 @@ def return_modalities_from_dict(
 
 
 class ProjectAndAggregate(nn.Module):
-    """Module that applies a linear projection to tokens and masks."""
+    """投影与聚合模块，对 token 进行线性投影和/或池化。
+
+    支持三种操作模式：
+    1. aggregate_then_project（默认）：先池化再投影
+    2. project_then_aggregate：先投影再池化
+    3. only_project：仅投影，保留 token 结构
+
+    主要用于将编码器输出投影到对比学习所需的低维空间。
+
+    关键属性：
+        projection: 多层线性投影序列（可含 ReLU 激活）
+        aggregate_then_project: 是否先池化再投影
+        only_project: 是否仅投影不池化
+    """
 
     def __init__(
         self,
@@ -73,16 +133,14 @@ class ProjectAndAggregate(nn.Module):
         output_embedding_size: int | None = None,
         only_project: bool = False,
     ):
-        """Initialize the linear module.
+        """初始化投影与聚合模块。
 
-        embedding_size: The embedding size of the input TokensAndMasks
-        num_layers: The number of layers to use in the projection. If >1, then
-            a ReLU activation will be applied between layers
-        aggregate_then_project: If True, then we will average the tokens before applying
-            the projection. If False, we will apply the projection first.
-        output_embedding_size: If provided, the final layer will output this size instead
-            of embedding_size.
-        only_project: If True, only project the tokens without aggregation.
+        Args:
+            embedding_size: 输入 TokensAndMasks 的嵌入维度
+            num_layers: 投影层数。若 >1，层间使用 ReLU 激活
+            aggregate_then_project: 若 True，先平均池化再投影；若 False，先投影再池化
+            output_embedding_size: 若指定，最后一层输出此维度而非 embedding_size
+            only_project: 若 True，仅投影不聚合，保留 token 结构
         """
         super().__init__()
         self.only_project = only_project
@@ -91,23 +149,30 @@ class ProjectAndAggregate(nn.Module):
             if output_embedding_size is not None
             else embedding_size
         )
-        # Build projection layers: all intermediate layers use embedding_size, final uses out_size
+        # 构建投影层：所有中间层使用 embedding_size，最后一层使用 out_size
         if num_layers == 1:
-            projections = [nn.Linear(embedding_size, out_size)]
+            projections = [nn.Linear(embedding_size, out_size)]  # 单层直接映射
         else:
-            projections = [nn.Linear(embedding_size, embedding_size)]
+            projections = [nn.Linear(embedding_size, embedding_size)]  # 第一层
             for _ in range(1, num_layers - 1):
-                projections.append(nn.ReLU())
+                projections.append(nn.ReLU())  # 层间 ReLU 激活
                 projections.append(nn.Linear(embedding_size, embedding_size))
-            projections.append(nn.ReLU())
-            projections.append(nn.Linear(embedding_size, out_size))
+            projections.append(nn.ReLU())  # 最后一层前的激活
+            projections.append(nn.Linear(embedding_size, out_size))  # 最后一层
         self.projection = nn.Sequential(*projections)
         self.aggregate_then_project = aggregate_then_project
 
     def apply_aggregate_then_project(
         self, x: TokensAndMasks | torch.Tensor
     ) -> torch.Tensor:
-        """Apply the aggregate operation to the input."""
+        """先池化（平均）再投影。
+
+        Args:
+            x: TokensAndMasks 对象或张量
+
+        Returns:
+            投影后的池化结果，形状 [B, D_out]
+        """
         if isinstance(x, TokensAndMasks):
             pooled_for_contrastive = pool_unmasked_tokens(
                 x, PoolingType.MEAN, spatial_pooling=False
@@ -121,7 +186,14 @@ class ProjectAndAggregate(nn.Module):
     def apply_project_then_aggregate(
         self, x: TokensAndMasks | torch.Tensor
     ) -> torch.Tensor:
-        """Apply the project operation to the input then aggregate."""
+        """先投影再池化（平均）。
+
+        Args:
+            x: TokensAndMasks 对象或张量
+
+        Returns:
+            池化后的投影结果，形状 [B, D_out]
+        """
         if isinstance(x, TokensAndMasks):
             decoder_emedded_dict = x.as_dict(include_nones=True)
             for modality in x.modalities:
@@ -147,7 +219,14 @@ class ProjectAndAggregate(nn.Module):
     def apply_project_only(
         self, x: TokensAndMasks | torch.Tensor
     ) -> TokensAndMasks | torch.Tensor:
-        """Apply projection without aggregation, preserving token structure."""
+        """仅投影不聚合，保留 token 结构。
+
+        Args:
+            x: TokensAndMasks 对象或张量
+
+        Returns:
+            投影后的 TokensAndMasks 或张量，形状与输入一致（除最后维度）
+        """
         if isinstance(x, TokensAndMasks):
             decoder_emedded_dict = x._asdict()
             for modality in x.modalities:
@@ -167,10 +246,18 @@ class ProjectAndAggregate(nn.Module):
     def forward(
         self, x: TokensAndMasks | torch.Tensor
     ) -> torch.Tensor | TokensAndMasks:
-        """Apply a (non)linear projection to an input TokensAndMasks.
+        """对输入 TokensAndMasks 应用（非）线性投影。
 
-        This can be applied either before or after pooling the tokens.
-        If only_project is True, returns projected tokens without aggregation.
+        根据 only_project 和 aggregate_then_project 参数选择操作模式：
+        - only_project=True: 仅投影
+        - aggregate_then_project=True: 先池化再投影
+        - aggregate_then_project=False: 先投影再池化
+
+        Args:
+            x: TokensAndMasks 或张量
+
+        Returns:
+            投影结果
         """
         if self.only_project:
             return self.apply_project_only(x)
@@ -181,7 +268,22 @@ class ProjectAndAggregate(nn.Module):
 
 
 class MultiModalPatchEmbeddings(nn.Module):
-    """Module that patchifies and encodes the input data for multiple modalities."""
+    """多模态 Patch 嵌入层，将输入数据分块并编码为 token。
+
+    为每种模态创建独立的 FlexiPatchEmbed 或 nn.Linear 嵌入模块，
+    并根据 tokenization_config 将波段分组为不同的 token。
+    支持训练时的 Band Dropout（随机丢弃光谱通道），增强跨光谱学习。
+
+    关键属性：
+        per_modality_embeddings: 模态名称到嵌入模块的字典
+        max_patch_size: 最大 patch 大小
+        embedding_size: 嵌入维度
+        band_dropout_rate: Band Dropout 概率
+        tokenization_config: 分词配置
+
+    使用场景：
+        作为编码器的第一步，将多模态遥感数据转换为统一维度的 token 表示。
+    """
 
     def __init__(
         self,
@@ -194,25 +296,21 @@ class MultiModalPatchEmbeddings(nn.Module):
         random_band_dropout: bool = False,
         band_dropout_modalities: list[str] | None = None,
     ):
-        """Initialize the patch embeddings.
+        """初始化多模态 Patch 嵌入层。
 
         Args:
-            supported_modality_names: Which modalities from Modality this model
-                instantiation supports
-            max_patch_size: Maximum size of patches
-            embedding_size: Size of embeddings
-            tokenization_config: Optional config for custom band groupings
-            use_linear_patch_embed: Passed through to FlexiPatchEmbed. Set False to load
-                checkpoints trained before this flag existed (which used Conv2d).
-            band_dropout_rate: Probability of dropping each band channel during training.
-                When > 0, randomly zeroes out bands before the patch embedding Conv2d,
-                forcing the model to learn cross-spectral representations. Only active
-                during training (self.training=True). Default: 0.0 (no dropout).
-            random_band_dropout: If True, sample the dropout rate per forward call from
-                Uniform(0, band_dropout_rate). This reduces train-inference mismatch
-                and acts as stronger augmentation. Default: False (fixed rate).
-            band_dropout_modalities: If provided, only apply band dropout to these
-                modalities. If None, apply to all modalities. Default: None.
+            supported_modality_names: 模型支持的模态名称列表
+            max_patch_size: 最大 patch 大小（基准）
+            embedding_size: 嵌入维度
+            tokenization_config: 可选的自定义波段分组配置
+            use_linear_patch_embed: 传递给 FlexiPatchEmbed，设为 False 以加载旧检查点
+            band_dropout_rate: 训练时随机丢弃波段的概率。
+                > 0 时在 patch 嵌入前随机将某些波段置零，
+                迫使模型学习跨光谱表示。仅在训练时激活。
+            random_band_dropout: 若 True，每次前向调用从 Uniform(0, band_dropout_rate)
+                采样丢弃率，减少训练-推理差异，增强数据增强效果。
+            band_dropout_modalities: 若指定，仅对这些模态应用 band dropout。
+                若 None，对所有模态应用。
         """
         super().__init__()
         self.max_patch_size = max_patch_size
@@ -223,7 +321,7 @@ class MultiModalPatchEmbeddings(nn.Module):
         self.band_dropout_rate = band_dropout_rate
         self.random_band_dropout = random_band_dropout
         self.band_dropout_modalities = band_dropout_modalities
-        # TODO: want to be able to remove certain bands and modalities
+        # 为每种模态创建独立的嵌入模块
         self.per_modality_embeddings = nn.ModuleDict({})
 
         for modality in self.supported_modality_names:
@@ -231,8 +329,8 @@ class MultiModalPatchEmbeddings(nn.Module):
                 self._get_patch_embedding_module_for_modality(modality)
             )
 
-        # For every patch embedding module we want to create a unique buffer
-        # for selecting the correct band indices from the data tensor
+        # 为每个模态的每个波段组注册索引选择缓冲区
+        # 用于从输入数据张量中选择对应波段的子集
         for modality in self.supported_modality_names:
             for idx, bandset_indices in enumerate(
                 self.tokenization_config.get_bandset_indices(modality)
@@ -241,7 +339,7 @@ class MultiModalPatchEmbeddings(nn.Module):
                 banset_indices_tensor = torch.tensor(bandset_indices, dtype=torch.long)
                 self.register_buffer(
                     buffer_name, banset_indices_tensor, persistent=False
-                )
+                )  # 非持久缓冲区，不保存到检查点
 
         # Create a dictionary of per modality index tensors to do  index select with registered buffer
 
@@ -259,14 +357,24 @@ class MultiModalPatchEmbeddings(nn.Module):
         return f"{modality}__{idx}"
 
     def _get_patch_embedding_module_for_modality(self, modality: str) -> nn.Module:
-        """Get the patch embedding module for a modality."""
+        """为指定模态创建嵌入模块。
+
+        根据模态类型选择不同的嵌入方式：
+        - 空间模态（is_spatial=True）：使用 FlexiPatchEmbed（2D 卷积/线性 patch 嵌入）
+        - 非空间模态（is_spatial=False）：使用 nn.Linear（线性投影）
+
+        Args:
+            modality: 模态名称
+
+        Returns:
+            包含每个波段组嵌入模块的 ModuleDict
+        """
         modality_spec = Modality.get(modality)
-        # Get bandset indices from tokenization config (may be overridden)
+        # 从分词配置获取波段组索引（可能已被自定义覆盖）
         bandset_indices = self.tokenization_config.get_bandset_indices(modality)
 
-        # Based on the modality name we choose the way to embed the data
-        # I likely will need to know about what the embedding strategy is in the forward as well
-        # Static modality
+        # 根据模态名称选择嵌入方式
+        # 非空间模态（如静态特征）使用线性投影
         if not modality_spec.is_spatial:
             # static in space
             return nn.ModuleDict(
@@ -297,7 +405,25 @@ class MultiModalPatchEmbeddings(nn.Module):
         input_data: MaskedOlmoEarthSample,
         patch_size: int,
     ) -> tuple[Tensor, Tensor]:
-        """Apply embedding to a modality."""
+        """对指定模态的数据应用嵌入操作。
+
+        核心流程：
+        1. 根据波段组索引从输入数据中选择对应波段子集
+        2. 可选：应用 Band Dropout 随机丢弃某些波段
+        3. 使用嵌入模块（FlexiPatchEmbed 或 Linear）将数据投影到嵌入空间
+        4. 提取对应的掩码信息
+
+        Args:
+            modality: 模态名称
+            input_data: 掩码输入样本
+            patch_size: Patch 大小
+
+        Returns:
+            (modality_tokens, modality_masks) 元组
+            - modality_tokens: 形状 [B, H/P, W/P, T, b_s, D]（空间模态）
+              或 [B, T, b_s, D]（非空间模态）
+            - modality_masks: 对应的掩码张量
+        """
         logger.debug(f"applying embedding to modality:{modality}")
         masked_modality_name = input_data.get_masked_modality_name(modality)
         modality_mask = getattr(input_data, masked_modality_name)
@@ -354,14 +480,17 @@ class MultiModalPatchEmbeddings(nn.Module):
 
     @staticmethod
     def _apply_band_dropout(patchified_data: Tensor, rate: float) -> Tensor:
-        """Randomly zero out band channels to force cross-spectral learning.
+        """随机将波段通道置零，以强制跨光谱学习。
+
+        在批次维度上独立地对每个样本的每个波段以概率 rate 丢弃。
+        确保每个样本至少保留一个波段，避免完全丢失信息。
 
         Args:
-            patchified_data: Input tensor with bands in the last dimension.
-            rate: Probability of dropping each band (per sample).
+            patchified_data: 输入张量，最后一维为波段维度
+            rate: 每个波段的丢弃概率
 
         Returns:
-            Tensor with randomly zeroed bands, at least 1 band kept per sample.
+            随机置零部分波段后的张量，每个样本至少保留 1 个波段
         """
         num_bands = patchified_data.shape[-1]
         batch_size = patchified_data.shape[0]
@@ -393,17 +522,17 @@ class MultiModalPatchEmbeddings(nn.Module):
         input_data: MaskedOlmoEarthSample,
         patch_size: int,
     ) -> dict[str, Tensor]:
-        """Return flexibly patchified embeddings for each modality of the input data.
+        """对输入数据的所有模态进行灵活的 Patch 嵌入。
 
-        Given a [B, H, W, (T), C] inputs, returns a [B, H, W, (T), b_s, D] output.
+        将 [B, H, W, (T), C] 的输入转换为 [B, H/P, W/P, (T), b_s, D] 的输出。
+        假设空间掩码与给定的 patch 大小一致（即掩码在 patch 边界对齐）。
 
-        We assume that the spatial masks are consistent for the given patch size,
-        so that if patch_size == 2 then one possible mask would be
-        [0, 0, 1, 1]
-        [0, 0, 1, 1]
-        [1, 1, 0, 0]
-        [1, 1, 0, 0]
-        for the H, W dimensions
+        Args:
+            input_data: 掩码输入样本
+            patch_size: Patch 大小
+
+        Returns:
+            模态名称到嵌入张量的映射字典，同时包含对应的掩码
         """
         output_dict = {}
         modalities_to_process = get_modalities_to_process(
@@ -420,7 +549,17 @@ class MultiModalPatchEmbeddings(nn.Module):
 
 
 class Reconstructor(nn.Module):
-    """Module that patchifies and encodes the input data."""
+    """Patch 重建模块，将 token 解码回像素空间。
+
+    首先通过解码器对 token 进行处理，然后使用 FlexiPatchReconstruction
+    或 nn.Linear 将每个模态的 token 重建回原始像素值。
+
+    关键属性：
+        decoder: 内部解码器模块
+        per_modality_reconstructions: 模态到重建模块的字典
+        max_patch_size: 最大 patch 大小
+        embedding_size: 嵌入维度
+    """
 
     def __init__(
         self,
@@ -429,14 +568,13 @@ class Reconstructor(nn.Module):
         max_patch_size: int,
         tokenization_config: TokenizationConfig | None = None,
     ):
-        """Initialize the patch embeddings.
+        """初始化重建模块。
 
         Args:
-            decoder: Predictor nn module to use on before reconstructor on input
-            supported_modalities: Which modalities from Modality this model
-                instantiation supports
-            max_patch_size: Maximum size of patches
-            tokenization_config: Optional config for custom band groupings
+            decoder: 在重建前对 token 进行处理的预测器模块
+            supported_modalities: 支持的模态列表
+            max_patch_size: 最大 patch 大小
+            tokenization_config: 可选的自定义波段分组配置
         """
         super().__init__()
         self.max_patch_size = max_patch_size
@@ -470,13 +608,23 @@ class Reconstructor(nn.Module):
     def _get_patch_reconstruction_module_for_modality(
         self, modality: ModalitySpec
     ) -> nn.Module:
-        """Get the patch reconstruction module for a modality."""
+        """为指定模态创建重建模块。
+
+        根据模态类型选择不同的重建方式：
+        - 非空间模态（tile_resolution==0）：使用 nn.Linear
+        - 空间模态：使用 FlexiPatchReconstruction（转置卷积重建）
+
+        Args:
+            modality: 模态规格说明
+
+        Returns:
+            包含每个波段组重建模块的 ModuleDict
+        """
         # Get bandset indices from tokenization config (may be overridden)
         bandset_indices = self.tokenization_config.get_bandset_indices(modality.name)
 
-        # Based on the modality name we choose the way to embed the data
-        # I likely will need to know about what the embedding strategy is in the forward as well
-        # Static modality
+        # 根据模态类型选择重建方式
+        # 非空间模态（如静态特征）使用线性投影
         if modality.get_tile_resolution() == 0:
             # static in space
             return nn.ModuleDict(
@@ -505,7 +653,23 @@ class Reconstructor(nn.Module):
     def apply_reconstruction_to_modality(
         self, modality: str, input_data: TokensAndMasks, patch_size: int
     ) -> tuple[Tensor, Tensor]:
-        """Apply reconstruction to a modality."""
+        """对指定模态的数据应用重建操作。
+
+        核心流程：
+        1. 按波段组分离 token
+        2. 使用对应的重建模块（FlexiPatchReconstruction 或 Linear）解码回像素空间
+        3. 将掩码扩展到像素级（通过 repeat 扩展空间维度）
+
+        Args:
+            modality: 模态名称
+            input_data: 解码后的 TokensAndMasks
+            patch_size: Patch 大小
+
+        Returns:
+            (modality_tokens, modality_mask) 元组
+            - modality_tokens: 重建的像素数据 [B, H*P, W*P, T, C]
+            - modality_mask: 扩展到像素级的掩码
+        """
         masked_modality_name = input_data.get_masked_modality_name(modality)
         modality_mask = getattr(input_data, masked_modality_name)
         modality_data = getattr(input_data, modality)
@@ -548,9 +712,18 @@ class Reconstructor(nn.Module):
         patch_size: int,
         input_res: int = BASE_GSD,
     ) -> TokensAndMasks:
-        """Return flexibly patchified reconstruction for each modality of the input data.
+        """对输入数据的所有模态进行灵活的 Patch 重建。
 
-        Given a [B, H, W, (T), b_s, D] inputs, returns a [B, H, W, (T), C] output.
+        流程：先通过解码器处理 token，然后对每个模态重建回像素空间。
+
+        Args:
+            x: 编码器输出的 TokensAndMasks
+            timestamps: 时间戳
+            patch_size: Patch 大小
+            input_res: 输入分辨率
+
+        Returns:
+            重建后的 TokensAndMasks，形状从 [B, H/P, W/P, T, b_s, D] 变为 [B, H, W, T, C]
         """
         input_data = self.decoder(x, timestamps, patch_size, input_res)
         output_dict = {}
@@ -569,7 +742,14 @@ class Reconstructor(nn.Module):
 
 @dataclass
 class ReconstructorConfig(Config):
-    """Configuration for the Reconstructor."""
+    """重建器的配置类。
+
+    包含重建器的所有超参数：
+        decoder_config: 内部解码器的配置
+        supported_modality_names: 支持的模态名称列表
+        max_patch_size: 最大 patch 大小
+        tokenization_config: 可选的分词配置
+    """
 
     decoder_config: "Config"
     supported_modality_names: list[str]
@@ -610,7 +790,20 @@ class ReconstructorConfig(Config):
 
 
 class CompositeEncodings(nn.Module):
-    """Composite encodings for FlexiVit models."""
+    """复合位置编码模块，为 FlexiViT 模型添加多种位置编码。
+
+    将嵌入维度平均分配给四种编码类型，各占 25%：
+    1. 通道编码（channel）：标识不同模态/波段组
+    2. 时间位置编码（pos_in_time）：标识时间步位置
+    3. 月份编码（month）：标识观测月份
+    4. 空间编码（spatial）：标识空间位置（考虑 GSD）
+
+    关键属性：
+        pos_embed: 1D 正弦-余弦时间位置编码（冻结）
+        month_embed: 月份嵌入层（冻结）
+        per_modality_channel_embeddings: 每个模态的通道嵌入参数
+        embedding_dim_per_embedding_type: 每种编码类型的维度（embedding_size * 0.25）
+    """
 
     def __init__(
         self,
@@ -621,16 +814,15 @@ class CompositeEncodings(nn.Module):
         random_channel_embeddings: bool = False,
         tokenization_config: TokenizationConfig | None = None,
     ):
-        """Initialize the composite encodings.
+        """初始化复合位置编码模块。
 
         Args:
-            embedding_size: Size of token embeddings
-            supported_modalities: Which modalities from Modality this model
-                instantiation supports
-            max_sequence_length: Maximum sequence length
-            learnable_channel_embeddings: Whether to use learnable channel embeddings
-            random_channel_embeddings: Initialize channel embeddings randomly (zeros if False)
-            tokenization_config: Optional config for custom band groupings
+            embedding_size: 嵌入维度总数，平均分配给四种编码
+            supported_modalities: 支持的模态列表
+            max_sequence_length: 最大序列长度（时间维度）
+            learnable_channel_embeddings: 是否使用可学习的通道嵌入
+            random_channel_embeddings: 是否随机初始化通道嵌入（False 则初始化为零）
+            tokenization_config: 可选的自定义波段分组配置
         """
         super().__init__()
         self.embedding_size = embedding_size
@@ -645,10 +837,9 @@ class CompositeEncodings(nn.Module):
         )
         # TODO: we need to be able to calculate the size of the param based on what types of embeddings it will get
 
-        # we have 4 embeddings types (pos_in_time, pos_in_space, month, channel) so each get
-        # 0.25 of the dimension
+        # 将嵌入维度平均分配给 4 种编码类型（通道、时间、月份、空间）
         self.embedding_dim_per_embedding_type = int(embedding_size * 0.25)
-        # Position encodings for time dimension initialized to 1D sinusoidal encodings
+        # 时间位置编码：1D 正弦-余弦编码，初始化后冻结
         self.pos_embed = nn.Parameter(
             get_1d_sincos_pos_encoding(
                 torch.arange(max_sequence_length),
@@ -656,7 +847,7 @@ class CompositeEncodings(nn.Module):
             ),
             requires_grad=False,
         )
-        # Month encodings
+        # 月份编码表（冻结）
         month_tab = get_month_encoding_table(self.embedding_dim_per_embedding_type)
         self.month_embed = nn.Embedding.from_pretrained(month_tab, freeze=True)
         if not learnable_channel_embeddings and not random_channel_embeddings:
@@ -712,19 +903,25 @@ class CompositeEncodings(nn.Module):
         use_modality_encodings: bool = True,
         use_temporal_encodings: bool = True,
     ) -> Tensor:
-        """Apply the encodings to the patchified data based on modality type.
+        """对单个模态的 token 应用复合位置编码。
+
+        根据模态类型和参数，依次添加四种编码：
+        1. 通道编码：标识模态和波段组（维度 0 : n）
+        2. 时间位置编码：标识时间步（维度 n : 2n）
+        3. 月份编码：标识观测月份（维度 2n : 3n）
+        4. 空间编码：标识空间位置，考虑 GSD（维度 3n : 4n）
 
         Args:
-            modality_name: Name of the modality being processed
-            modality_tokens: Token embeddings for the modality
-            timestamps: Optional timestamps for temporal encodings
-            patch_size: Optional patch size for spatial encodings
-            input_res: Optional input resolution for spatial encodings
-            use_modality_encodings: Whether to use modality encodings
-            use_temporal_encodings: Whether to use temporal encodings
+            modality_name: 模态名称
+            modality_tokens: 模态的 token 张量
+            timestamps: 可选的时间戳（用于时间和月份编码）
+            patch_size: 可选的 patch 大小（用于空间编码）
+            input_res: 可选的输入分辨率（用于空间编码）
+            use_modality_encodings: 是否添加通道编码
+            use_temporal_encodings: 是否添加时间/月份编码
 
         Returns:
-            Tensor with encodings applied based on modality type
+            添加位置编码后的 token 张量
         """
         logger.debug(
             f"use_modality_encodings: {use_modality_encodings}, use_temporal_encodings: {use_temporal_encodings}"
@@ -775,7 +972,7 @@ class CompositeEncodings(nn.Module):
         n = self.embedding_dim_per_embedding_type
         actual_bandsets = modality_tokens.shape[-2]
 
-        # Channel embeddings
+        # 通道编码：标识模态和波段组
         if use_modality_encodings:
             channel_embed = self.per_modality_channel_embeddings[modality.name]
             if channel_embed.shape[0] != actual_bandsets:
@@ -788,24 +985,24 @@ class CompositeEncodings(nn.Module):
             channel_embed = repeat(
                 channel_embed, f"b_s d -> {ein_string}", **ein_dict
             ).to(device)
-            modality_embed[..., :n] += channel_embed
+            modality_embed[..., :n] += channel_embed  # 添加到前 n 维
 
         if modality.is_multitemporal and use_temporal_encodings:
-            # Time position encodings
+            # 时间位置编码：标识时间步位置
             time_embed = repeat(self.pos_embed[:t], f"t d -> {ein_string}", **ein_dict)
-            modality_embed[..., n : n * 2] += time_embed.to(device)
+            modality_embed[..., n : n * 2] += time_embed.to(device)  # 添加到第 n~2n 维
 
-            # Month encodings
+            # 月份编码：标识观测月份
             assert timestamps is not None
-            months = timestamps[:, :, 1]
+            months = timestamps[:, :, 1]  # 提取月份信息
             month_embed = self.month_embed(months)
             month_embed = repeat(month_embed, f"b t d -> {ein_string}", **ein_dict)
-            modality_embed[..., n * 2 : n * 3] += month_embed.to(device)
+            modality_embed[..., n * 2 : n * 3] += month_embed.to(device)  # 添加到第 2n~3n 维
         if modality.is_spatial:
-            # Spatial encodings
+            # 空间编码：标识空间位置，考虑地面采样距离（GSD）
             assert input_res is not None
             assert patch_size is not None
-            gsd_ratio = self.calculate_gsd_ratio(input_res, patch_size)
+            gsd_ratio = self.calculate_gsd_ratio(input_res, patch_size)  # 计算 GSD 比率
             spatial_embed = get_2d_sincos_pos_encoding_with_resolution(
                 grid_size=(h, w),
                 res=torch.ones(b, device=device) * gsd_ratio,
@@ -816,7 +1013,7 @@ class CompositeEncodings(nn.Module):
             spatial_embed = repeat(
                 spatial_embed, f"b h w d -> {ein_string}", **ein_dict
             )
-            modality_embed[..., n * 3 : n * 4] += spatial_embed
+            modality_embed[..., n * 3 : n * 4] += spatial_embed  # 添加到第 3n~4n 维
         return modality_tokens + modality_embed
 
     def forward(
@@ -854,7 +1051,22 @@ class CompositeEncodings(nn.Module):
 
 
 class FlexiVitBase(nn.Module):
-    """FlexiVitBase is a base class for FlexiVit models."""
+    """FlexiViT 基类，提供多模态 Transformer 的通用注意力逻辑。
+
+    本类不直接使用，而是作为 Encoder 和 PredictorBase 的基类。
+    提供了以下通用功能：
+    - Transformer 块的初始化和 Xavier 权重初始化
+    - 复合位置编码
+    - Token 的折叠（collapse_and_combine_hwtc）和展开（split_and_expand_per_modality）
+    - Flash Attention 的 token 打包/解包
+    - FSDP 和 torch.compile 支持
+
+    关键属性：
+        blocks: Transformer 注意力块列表
+        composite_encodings: 复合位置编码模块
+        supported_modality_names: 支持的模态名称列表
+        use_flash_attn: 是否使用 Flash Attention
+    """
 
     cross_attn: bool = False
 
@@ -940,9 +1152,19 @@ class FlexiVitBase(nn.Module):
         """
         return modality_data.shape[1:-2] if modality_data.ndim > 3 else ()
 
-    # is naming here confusing if one of these channels can be missing?
     def collapse_and_combine_hwtc(self, x: dict[str, Tensor]) -> tuple[Tensor, Tensor]:
-        """Collapse the tokens and masks, respectively, into two tensors."""
+        """将各模态的 token 和掩码分别折叠为两个统一张量。
+
+        将各模态的所有 token 展平并沿 token 维度拼接，
+        将各模态的所有掩码展平并沿 token 维度拼接。
+        这是进入 Transformer 注意力层前的准备步骤。
+
+        Args:
+            x: 模态名称到张量的映射字典
+
+        Returns:
+            (tokens, masks) 元组，tokens 形状 [B, total_tokens, D]
+        """
         tokens, masks = [], []
         available_modalities = return_modalities_from_dict(x)
         modalities_to_process = get_modalities_to_process(
@@ -1006,13 +1228,17 @@ class FlexiVitBase(nn.Module):
     def split_and_expand_per_modality(
         x: Tensor, modalities_to_dims_dict: dict
     ) -> dict[str, Tensor]:
-        """Split and expand the tokens per modality.
+        """将统一张量按模态拆分并展开回各模态的原始形状。
+
+        collapse_and_combine_hwtc 的逆操作。从拼接的 token 序列中
+        按各模态的 token 数量切分，然后恢复为各模态的原始空间/时间形状。
 
         Args:
-            x: Tokens to split and expand (b n d)
-            modalities_to_dims_dict: Dictionary mapping modalities to their dimensions
+            x: 统一的 token 张量，形状 [B, total_tokens, D]
+            modalities_to_dims_dict: 模态名称到原始形状的映射
+
         Returns:
-            tokens_only_dict: mapping modalities to their tokens
+            模态名称到恢复形状后的 token 张量的映射
         """
         tokens_only_dict = {}
         tokens_reshaped = 0
@@ -1037,14 +1263,16 @@ class FlexiVitBase(nn.Module):
 
     @staticmethod
     def pack_tokens(tokens: Tensor, mask: Tensor) -> Tensor:
-        """Pack the Batch and sequence length dimensions of tokens and mask into a single tensor.
+        """将 token 的批次和序列维度打包为一维，移除掩码位置。
+
+        用于 Flash Attention 的变长序列模式，将 [B, T, D] 打包为 [total_valid_tokens, D]。
 
         Args:
-            tokens: Tokens to pack
-            mask: Mask to pack
+            tokens: 待打包的 token 张量 [B, T, D]
+            mask: 掩码张量 [B, T]（True 表示有效 token）
 
         Returns:
-            Packed tokens enabling varlen flash attention
+            仅包含有效 token 的打包张量 [total_valid_tokens, D]
         """
         tokens_packed = torch.flatten(tokens, end_dim=1)
         mask = torch.flatten(mask)
@@ -1053,12 +1281,18 @@ class FlexiVitBase(nn.Module):
 
     @staticmethod
     def unpack_tokens(tokens: Tensor, mask: Tensor, og_shape: tuple) -> Tensor:
-        """Unpack the Batch and sequence length dimensions of tokens and mask into a single tensor.
+        """将打包的一维 token 解包回原始的批次和序列维度。
+
+        pack_tokens 的逆操作，将 [total_valid_tokens, D] 解包为 [B, T, D]，
+        掩码位置填充零。
 
         Args:
-            tokens: Tokens to unpack
-            mask: Mask to unpack
-            og_shape: Original shape of the tokens
+            tokens: 打包的 token 张量 [total_valid_tokens, D]
+            mask: 掩码张量 [B, T]
+            og_shape: 原始张量形状 (B, T, D)
+
+        Returns:
+            解包后的 token 张量 [B, T, D]
         """
         tokens_new = tokens.new_zeros(og_shape[0] * og_shape[1], og_shape[2])
         mask = torch.flatten(mask)
@@ -1078,7 +1312,29 @@ class FlexiVitBase(nn.Module):
 
 
 class Encoder(FlexiVitBase):
-    """Encoder module that processes masked input samples into token representations."""
+    """FlexiViT 编码器，将掩码输入处理为 token 表示。
+
+    完整流程：
+    1. Patch 嵌入：将输入图像/数据划分为 patch 并投影到嵌入空间
+    2. 位置编码：添加复合位置编码（时间+空间+月份+通道）
+    3. Transformer 注意力：通过多层自注意力块处理 token
+    4. LayerNorm：在最后一层应用归一化
+    5. 投影/池化：将 token 投影和池化为对比学习所需的表示
+
+    支持的高级特性：
+    - Register Token：额外的可学习 token，提升注意力质量
+    - Band Dropout：训练时随机丢弃光谱通道
+    - Flash Attention：高效的注意力实现
+    - 冻结 Patch 嵌入：保持嵌入层参数不变
+    - Token Exit：支持不同深度的 token 提前退出
+    - Fast Pass：推理时跳过掩码处理，直接使用全部 token
+
+    关键属性：
+        patch_embeddings: 多模态 Patch 嵌入层
+        project_and_aggregate: 投影和聚合模块
+        embedding_projector: 可选的嵌入投影器（改变输出维度）
+        register_tokens: 可选的 Register Token 参数
+    """
 
     cross_attn: bool = False
 
@@ -1210,7 +1466,11 @@ class Encoder(FlexiVitBase):
             self._init_register_tokens()
 
     def disable_band_dropout(self) -> None:
-        """Disable band dropout (e.g. for target/EMA encoder)."""
+        """禁用 Band Dropout（用于目标/EMA 编码器）。
+
+        目标编码器需要始终看到完整的光谱信息，
+        因此需要禁用 Band Dropout。
+        """
         self.patch_embeddings.band_dropout_rate = 0.0
 
     def _init_register_tokens(self) -> None:
@@ -1220,9 +1480,17 @@ class Encoder(FlexiVitBase):
     def create_token_exit_ids(
         self, x: dict[str, Tensor], token_exit_cfg: dict[str, int]
     ) -> dict[str, Tensor]:
-        """Create the token exit ids for # of layers of attention for each band group.
+        """为每个波段组创建 token 退出 ID。
 
-        Assumes modality channel groups are in the second to last dimension of the tokens.
+        退出 ID 指示每个 token 在第几层退出 Transformer。
+        假设模态通道组在 token 的倒数第二维。
+
+        Args:
+            x: 模态到 token 的映射
+            token_exit_cfg: 模态到退出层数的映射
+
+        Returns:
+            模态到退出 ID 张量的映射
         """
         exit_ids_per_modality_dict = {}
         available_modalities = return_modalities_from_dict(x)
@@ -1239,37 +1507,39 @@ class Encoder(FlexiVitBase):
     def remove_masked_tokens(
         x: Tensor, mask: Tensor
     ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """Remove masked tokens from the tokens and masks.
+        """移除掩码位置的 token，仅保留在线编码器可见的 token。
 
-        Implementation from https://stackoverflow.com/a/68621610/2332296
+        这是 MAE 效率优化的核心：仅对可见 token 计算注意力，
+        大幅减少计算量（如 75% 掩码率时，计算量降为 25%）。
 
-        On Input:
-        0 means this token should be removed
-        1 means this token should be kept
+        实现方式：
+        1. 按掩码值降序排序，使可见 token 排在前面
+        2. 截取到最长有效序列长度
+        3. 返回排序索引以便后续恢复
 
         Args:
-            x: Tokens to remove masked tokens from
-            mask: Mask to remove masked tokens from
+            x: 待处理的 token 张量 [B, T, D]
+            mask: 掩码张量 [B, T]（1=保留，0=移除）
 
         Returns:
-            tokens: [B, T, D]
-            indices: [B, T]
-            updated_mask: [B, T]
-            seqlens: [B]
-            max_length: [1]
-            where T is the max number of unmasked tokens for an instance
+            (tokens, indices, updated_mask, seqlens, max_length) 五元组
+            - tokens: 仅含可见 token [B, T', D]
+            - indices: 排序索引 [B, T]（用于恢复原始顺序）
+            - updated_mask: 截取后的掩码 [B, T']
+            - seqlens: 各样本的有效 token 数 [B]
+            - max_length: 最长有效序列长度
         """
-        sorted_mask, indices = torch.sort(mask, dim=1, descending=True, stable=True)
-        # Now all the places where we want to keep the token are at the front of the tensor
+        sorted_mask, indices = torch.sort(mask, dim=1, descending=True, stable=True)  # 降序排序：可见 token 排前
+        # 根据排序索引重排 token，使可见 token 排在前面
         x = x.gather(1, indices[:, :, None].expand_as(x))
         # Now all tokens that should be kept are first in the tensor
 
-        # set masked values to 0 (not really necessary since we'll ignore them anyway)
+        # 将掩码位置的值置零（非必须，因为后续会忽略）
         x = x * sorted_mask.unsqueeze(-1)
 
-        # cut off to the length of the longest sequence
-        seq_lengths = sorted_mask.sum(-1)
-        max_length = seq_lengths.max()
+        # 截取到最长有效序列长度，去除尾部全零 token
+        seq_lengths = sorted_mask.sum(-1)  # 各样本的有效 token 数
+        max_length = seq_lengths.max()  # 最长有效序列长度
         x = x[:, :max_length]
         # New mask chopped to the longest sequence
         updated_mask = sorted_mask[:, :max_length]
@@ -1280,16 +1550,18 @@ class Encoder(FlexiVitBase):
     def add_removed_tokens(
         x: Tensor, indices: Tensor, mask: Tensor
     ) -> tuple[Tensor, Tensor]:
-        """Add removed tokens to the tokens and masks.
+        """将移除的掩码位置恢复，用零填充掩码位置的 token。
+
+        remove_masked_tokens 的逆操作。将仅含可见 token 的张量
+        恢复为原始长度，掩码位置填充零。
 
         Args:
-            x: Tokens to add removed tokens to
-            indices: Original indices of the masked tokens
-            mask: Mask to add removed tokens to
+            x: 仅含可见 token 的张量 [B, T', D]
+            indices: 排序索引 [B, T]
+            mask: 掩码张量 [B, T']
 
         Returns:
-            tokens: Tokens with removed tokens added
-            mask: Mask with removed tokens added
+            (tokens, mask) 元组，tokens 形状 [B, T, D]
         """
         assert x.shape[1] > 0, (
             "x must have at least one token we should not mask all tokens"
@@ -1357,7 +1629,20 @@ class Encoder(FlexiVitBase):
         attn_mask: Tensor | None,
         processed_register_tokens: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None]:
-        """Concatenate register tokens to the tokens."""
+        """在 token 序列前拼接 Register Token。
+
+        Register Token 是额外的可学习 token，不对应任何输入数据，
+        用作注意力汇聚点，防止自注意力退化。参考：
+        Vision Transformers Need Registers (https://arxiv.org/abs/2309.16588)
+
+        Args:
+            tokens: 输入 token 张量 [B, T, D]
+            attn_mask: 注意力掩码 [B, T]
+            processed_register_tokens: 可选的预处理过的 register token
+
+        Returns:
+            (tokens, attn_mask) 元组，tokens 形状 [B, num_reg + T, D]
+        """
         batch_size = tokens.shape[0]
         # Expand register tokens to match batch size: [num_register_tokens, embedding_size] -> [batch_size, num_register_tokens, embedding_size]
         if processed_register_tokens is None:
@@ -1380,7 +1665,16 @@ class Encoder(FlexiVitBase):
         return tokens, attn_mask
 
     def pop_register_tokens(self, tokens: Tensor) -> tuple[Tensor, Tensor]:
-        """Pop the register tokens from the tokens."""
+        """从 token 序列中分离 Register Token。
+
+        Args:
+            tokens: 包含 Register Token 的张量 [B, num_reg + T, D]
+
+        Returns:
+            (tokens, register_tokens) 元组
+            - tokens: 去除 Register Token 后的张量 [B, T, D]
+            - register_tokens: Register Token [B, num_reg, D]
+        """
         register_tokens = tokens[:, : self.num_register_tokens, :]
         tokens = tokens[:, self.num_register_tokens :, :]
         return tokens, register_tokens
@@ -1388,7 +1682,19 @@ class Encoder(FlexiVitBase):
     def get_token_norm_stats(
         self, tokens: Tensor, register_tokens: Tensor
     ) -> dict[str, float]:
-        """Get the token norm stats."""
+        """计算 token 范数统计信息（用于诊断 Register Token 是否膨胀）。
+
+        对 Register Token 和非 Register Token 分别计算 L2 范数统计：
+        - Register Token: 均值、最小值、最大值
+        - 非 Register Token: 均值、最小值、最大值、标准差、多个分位数
+
+        Args:
+            tokens: 非 Register Token [B, T, D]
+            register_tokens: Register Token [B, num_reg, D]
+
+        Returns:
+            包含各项统计指标的字典
+        """
         # Compute norms for register tokens: [batch_size, num_register_tokens]
         register_tokens_norms = torch.norm(register_tokens, dim=2)
         reg_norms_flat = register_tokens_norms.flatten()
@@ -1465,27 +1771,57 @@ class Encoder(FlexiVitBase):
         token_exit_cfg: dict[str, int] | None = None,
         fast_pass: bool = False,
     ) -> tuple[dict[str, Tensor], dict[str, Any] | None]:
-        """Apply the attention to the tokens and masks."""
+        """对 token 应用 Transformer 注意力。
+
+        核心流程：
+        1. 分离 token 和掩码
+        2. 添加复合位置编码
+        3. 折叠各模态 token 为统一序列
+        4. 移除掩码 token（MAE 效率优化）
+        5. 可选：打包 token（Flash Attention）
+        6. 可选：添加 Register Token
+        7. 逐层应用 Transformer 块
+        8. 可选：移除 Register Token
+        9. 可选：解包 token（Flash Attention）
+        10. 应用 LayerNorm
+        11. 恢复掩码位置（填充零）
+        12. 展开回各模态原始形状
+
+        Args:
+            x: 模态到张量的映射字典
+            timestamps: 时间戳
+            patch_size: Patch 大小
+            input_res: 输入分辨率
+            token_exit_cfg: Token 退出配置（不同模态使用不同深度）
+            fast_pass: 是否启用快速推理模式（跳过掩码处理）
+
+        Returns:
+            (tokens_per_modality_dict, token_norm_stats) 元组
+        """
+        # 步骤1：分离 token 和掩码，记录各模态的原始形状
         tokens_only_dict, original_masks_dict, modalities_to_dims_dict = (
             self.split_tokens_masks_and_dims(x)
         )
-        # already a no-op but we could remove entirely
+        # 已为空操作但可移除
         exit_ids_seq = self.create_exit_seqs(
             tokens_only_dict, original_masks_dict, token_exit_cfg
         )
-        # exited tokens are just the linear projection
+        # 退出 token 初始值为线性投影（无编码时的值）
         exited_tokens, _ = self.collapse_and_combine_hwtc(x)
 
+        # 步骤2：添加复合位置编码
         tokens_dict = self.composite_encodings.forward(
             tokens_only_dict,
             timestamps,
             patch_size,
             input_res,
         )
-        tokens_dict.update(original_masks_dict)
+        tokens_dict.update(original_masks_dict)  # 合并掩码信息
 
+        # 步骤3：折叠各模态 token 为统一的序列
         tokens, mask = self.collapse_and_combine_hwtc(tokens_dict)
 
+        # 步骤4：移除掩码 token（MAE 效率优化：仅对可见 token 计算注意力）
         tokens, indices, new_mask, seq_lengths, max_seqlen, bool_mask = (
             self._maybe_remove_masked_tokens(tokens, mask, fast_pass)
         )
@@ -1499,11 +1835,11 @@ class Encoder(FlexiVitBase):
                 exited_tokens, bool_mask
             )
 
-        # Pack x tokens
+        # 步骤5：可选 — 打包 token（Flash Attention 变长模式）
         if self.use_flash_attn:
-            cu_seqlens = get_cumulative_sequence_lengths(seq_lengths)
-            og_shape = tokens.shape
-            tokens = self.pack_tokens(tokens, new_mask)
+            cu_seqlens = get_cumulative_sequence_lengths(seq_lengths)  # 计算累积序列长度
+            og_shape = tokens.shape  # 记录原始形状
+            tokens = self.pack_tokens(tokens, new_mask)  # 打包：移除填充位置
         else:
             cu_seqlens = None
 
@@ -1512,21 +1848,23 @@ class Encoder(FlexiVitBase):
             fast_pass=fast_pass,
         )
 
+        # 步骤6：可选 — 添加 Register Token
         if self.has_register_tokens:
             tokens, attn_mask = self.add_register_tokens_and_masks(tokens, attn_mask)
 
-        # Apply attn with varying encoder depths
+        # 步骤7：逐层应用 Transformer 注意力块
         for i_blk, blk in enumerate(self.blocks):
-            # Skip the zeroth block because we want to use the exited tokens that don't have encodings as this allows trivial solution of predicting the shared encodings
+            # Token 退出逻辑：跳过第 0 层（允许预测共享编码的平凡解）
             if (exit_ids_seq is not None) and (i_blk > 0):
                 # this should only ever be called by the target encoder,
                 # in a torch.no_grad context
                 assert exited_tokens is not None
                 # If a token should exit, then we update the exit token with the current token at the same position
+                # 若 token 应在当前层退出，更新退出 token
                 exited_tokens = torch.where(
                     condition=(exit_ids_seq == i_blk),
-                    input=tokens,
-                    other=exited_tokens,
+                    input=tokens,  # 退出条件满足：使用当前层的 token
+                    other=exited_tokens,  # 否则：保留之前的退出值
                 )
             # we take the inverse of the mask because a value
             # of True indicates the value *should* take part in
@@ -1541,8 +1879,10 @@ class Encoder(FlexiVitBase):
                 attn_mask=attn_mask,
             )
 
+        # 步骤8：可选 — 移除 Register Token
         if self.has_register_tokens:
             tokens, register_tokens = self.pop_register_tokens(tokens)
+            # 可选：记录 token 范数统计（用于诊断 Register Token 是否膨胀）
             token_norm_stats = (
                 self.get_token_norm_stats(tokens, register_tokens)
                 if self.log_token_norm_stats
@@ -1551,9 +1891,11 @@ class Encoder(FlexiVitBase):
         else:
             token_norm_stats = None
 
+        # 步骤9：可选 — 解包 token（Flash Attention）
         if self.use_flash_attn:
             tokens = self.unpack_tokens(tokens, new_mask, og_shape)
 
+        # Token 退出：最后一层，所有 token 使用完整深度的输出
         if exit_ids_seq is not None:
             # this should only ever be called by the target encoder,
             # in a torch.no_grad context
@@ -1565,17 +1907,16 @@ class Encoder(FlexiVitBase):
                 input=tokens,
                 other=exited_tokens,
             )
-        # we apply the norm before we add the removed tokens,
-        # so that the norm is only computed against "real" tokens
+        # 步骤10：应用 LayerNorm（在恢复掩码位置前，仅对"真实" token 归一化）
         tokens = self.norm(tokens)
-        # we don't care about the mask returned by add_removed_tokens, since we will
-        # just use the original, unclipped mask here
+        # 步骤11：恢复掩码位置（填充零），使用原始未裁剪的掩码
         tokens = self._maybe_add_removed_tokens(tokens, indices, new_mask, fast_pass)
 
+        # 步骤12：展开回各模态的原始空间/时间形状
         tokens_per_modality_dict = self.split_and_expand_per_modality(
             tokens, modalities_to_dims_dict
         )
-        # merge original masks and the processed tokens
+        # 合并原始掩码和处理后的 token
         tokens_per_modality_dict.update(original_masks_dict)
         return tokens_per_modality_dict, token_norm_stats
 
@@ -1587,23 +1928,34 @@ class Encoder(FlexiVitBase):
         token_exit_cfg: dict | None = None,
         fast_pass: bool = False,
     ) -> dict[str, Any]:
-        """Process masked input samples into token representations.
+        """编码器前向传播：将掩码输入处理为 token 表示。
+
+        流程：
+        1. Patch 嵌入：将输入数据转换为 patch token
+        2. 注意力处理：添加位置编码并通过 Transformer 块
+        3. 可选：嵌入投影到 output_embedding_size
+        4. 投影/池化：为对比学习生成全局表示
 
         Args:
-            x: Masked input sample containing the data to be encoded
-            patch_size: Size of patches to divide the input into
-            input_res: Resolution of the input data
-            token_exit_cfg: Configuration for token exit
-            fast_pass: Whether to always pass None as the mask to the transformer, this enables torch based flash attention, and skips mask construciton and sorting
+            x: 掩码输入样本
+            patch_size: Patch 大小
+            input_res: 输入数据的地面采样距离（GSD）
+            token_exit_cfg: Token 退出配置（键为模态名，值为退出层数）
+            fast_pass: 快速推理模式（跳过掩码处理，启用原生 Flash Attention）
 
         Returns:
-            TokensAndMasks containing the encoded representations and their masks
+            输出字典，包含：
+            - "tokens_and_masks": TokensAndMasks 对象
+            - "project_aggregated": 投影池化后的张量（对比学习用）
+            - "token_norm_stats": Token 范数统计（可选）
         """
         if fast_pass and token_exit_cfg is not None:
             raise ValueError("token_exit_cfg cannot be set when fast_pass is True")
 
+        # 步骤1：Patch 嵌入 — 将输入数据转换为 patch token
         patchified_tokens_and_masks = self.patch_embeddings.forward(x, patch_size)
 
+        # 步骤2：注意力处理（添加位置编码 → Transformer 块）
         if token_exit_cfg is None or any(
             [exit_depth > 0 for exit_depth in token_exit_cfg.values()]
         ):
@@ -1619,7 +1971,7 @@ class Encoder(FlexiVitBase):
             token_norm_stats = {}
         output = TokensAndMasks(**patchified_tokens_and_masks)
 
-        # Project to output_embedding_size if configured
+        # 步骤3：可选 — 投影到 output_embedding_size
         if self.embedding_projector is not None:
             output = self.embedding_projector(output)
 
@@ -1629,6 +1981,7 @@ class Encoder(FlexiVitBase):
         if token_norm_stats:
             output_dict["token_norm_stats"] = token_norm_stats
 
+        # 步骤4：投影和池化（为对比学习生成全局表示），仅在非快速模式时计算
         if not fast_pass:
             output_dict["project_aggregated"] = self.project_and_aggregate(output)
 
@@ -1656,7 +2009,17 @@ class Encoder(FlexiVitBase):
 
 
 class PredictorBase(FlexiVitBase):
-    """Predictor module that generates predictions from encoded tokens."""
+    """预测器基类，从编码 token 生成预测。
+
+    使用交叉注意力机制：待解码的 token 作为查询（Q），
+    编码器输出的未掩码 token 作为键和值（K, V）。
+
+    关键属性：
+        encoder_to_decoder_embed: 编码器到解码器的维度映射
+        mask_token: 可学习的掩码 token（用于替换待解码位置）
+        to_output_embed: 输出投影层
+        input_norm: 输入归一化层
+    """
 
     cross_attn = True
 
@@ -1731,10 +2094,16 @@ class PredictorBase(FlexiVitBase):
         self.apply(self._init_weights)
 
     def add_masks(self, x: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Replace tokens that should be decoded (MaskValue.DECODER_ONLY) with the learnable mask token.
+        """用可学习的 mask_token 替换待解码位置的 token。
 
-        in a dimension-agnostic way using einops. We assume the final dimension of each token tensor
-        is the embedding dimension matching self.mask_token's size.
+        对于掩码值为 MaskValue.DECODER 的位置，用 self.mask_token 替换原始 token，
+        使解码器通过交叉注意力从可见 token 预测这些位置的值。
+
+        Args:
+            x: 模态到张量的映射字典
+
+        Returns:
+            替换掩码位置后的 token 字典
         """
         output_dict = {}
         available_modalities = return_modalities_from_dict(x)
@@ -1765,32 +2134,26 @@ class PredictorBase(FlexiVitBase):
 
         return output_dict
 
-    # TODO: GIVE more explicit function names
     @staticmethod
     def split_x_y(tokens: Tensor, mask: Tensor) -> tuple[Tensor, ...]:
-        """Splits tokens into three groups based on mask values.
+        """根据掩码值将 token 分为解码组和上下文组。
 
-        This function:
-        1. Sorts tokens according to the mask and gathers them in order.
-        2. Chooses tokens to be decoded (x) based on the mask value DECODER.
-        3. Chooses tokens to be used as context (y) based on the mask value ONLINE_ENCODER.
-        4. Identifies missing tokens (z) based on the mask value MISSING.
-        5. Returns boolean masks for x, y, and z along with indices to revert to the original ordering.
+        核心逻辑：
+        1. 将 MISSING 掩码重标记为 TARGET_ENCODER_ONLY（使未使用 token 排在中间）
+        2. 按掩码值降序排序 token
+        3. 提取 DECODER 掩码的 token（待解码，作为交叉注意力的查询）
+        4. 提取 ONLINE_ENCODER 掩码的 token（可见，作为交叉注意力的键/值）
+        5. 返回两组 token 及其掩码和原始索引
 
         Args:
-            tokens: Tokens to split of shape [B, T, D].
-            mask: Mask of shape [B, T].
+            tokens: 待分割的 token 张量 [B, T, D]
+            mask: 掩码张量 [B, T]
 
         Returns:
-            tokens_to_decode: Tokens to be decoded of shape [B, X_len, D].
-            unmasked_tokens: Tokens to be used as context of shape [B, Y_len, D].
-            tokens_to_decode_mask: Binary mask for x tokens of shape [B, X_len].
-            unmasked_tokens_mask: Binary mask for y tokens of shape [B, Y_len].
-            indices: Indices for restoring the original token ordering of shape [B, T].
-            seqlens_tokens_to_decode: Sequence lengths of tokens to decode of shape [B].
-            seqlens_unmasked_tokens: Sequence lengths of unmasked tokens of shape [B].
-            max_length_of_decoded_tokens: Maximum length of decoded tokens of shape [1].
-            max_length_of_unmasked_tokens: Maximum length of unmasked tokens of shape [1].
+            九元组：tokens_to_decode, unmasked_tokens, tokens_to_decode_mask,
+            unmasked_tokens_mask, indices, seqlens_tokens_to_decode,
+            seqlens_unmasked_tokens, max_length_of_decoded_tokens,
+            max_length_of_unmasked_tokens
         """
         # Set Missing Masks to Target Encoder ONLY so that we can have all unused tokens in the middle
         org_mask_dtype = mask.dtype
@@ -1848,21 +2211,20 @@ class PredictorBase(FlexiVitBase):
         unmasked_tokens_mask: Tensor,
         indices: Tensor,
     ) -> Tensor:
-        """Reintegrate the separated token sequences into their original order.
+        """将分离的解码 token 和未掩码 token 重新合并为原始顺序。
 
-        The token masks zero out positions which are not used/needed,
-        and the final scatter step re-applies the original ordering tracked in 'indices'.
+        先将解码 token 和未掩码 token 放回全零张量的对应位置，
+        然后通过 scatter 操作恢复原始排序。
 
         Args:
-            tokens_to_decode: Key/value tokens of shape [B, X_len, D].
-            unmasked_tokens: Query tokens of shape [B, Y_len, D].
-            tokens_to_decode_mask: Binary mask for tokens to decode of shape [B, X_len].
-            unmasked_tokens_mask: Binary mask for unmasked tokens of shape [B, Y_len].
-            indices: Indices for restoring the original token ordering of shape [B, T].
+            tokens_to_decode: 解码 token [B, X_len, D]
+            unmasked_tokens: 未掩码 token [B, Y_len, D]
+            tokens_to_decode_mask: 解码 token 掩码 [B, X_len]
+            unmasked_tokens_mask: 未掩码 token 掩码 [B, Y_len]
+            indices: 原始排序索引 [B, T]
 
         Returns:
-            A merged tokens tensor of shape [B, T, D] with all tokens in their
-            original positions.
+            合并后的 token 张量 [B, T, D]
         """
         # Get dimensions
         B, T = indices.shape[0], indices.shape[1]
@@ -1880,7 +2242,14 @@ class PredictorBase(FlexiVitBase):
         return tokens
 
     def is_any_data_to_be_decoded(self, modality_mask: Tensor) -> bool:
-        """Check if any data is to be decoded for a given modality."""
+        """检查是否有数据需要解码（掩码值为 DECODER）。
+
+        Args:
+            modality_mask: 模态的掩码张量
+
+        Returns:
+            若存在需要解码的数据则返回 True
+        """
         return (MaskValue.DECODER.value == modality_mask).any()
 
     def apply_fsdp(self, **fsdp_kwargs: Any) -> None:
@@ -1890,7 +2259,19 @@ class PredictorBase(FlexiVitBase):
 
 
 class Predictor(PredictorBase):
-    """Predictor module that generates predictions from encoded tokens."""
+    """FlexiViT 预测器，从编码 token 生成掩码 token 的预测。
+
+    使用交叉注意力：待解码 token（Q） attends to 编码器可见 token（K, V）。
+    支持 Flash Attention 和标准 SDPA 两种后端。
+
+    关键流程：
+    1. 输入归一化 + 编码器到解码器维度映射
+    2. 用 mask_token 替换待解码位置
+    3. 添加位置编码
+    4. 分离解码 token 和上下文 token
+    5. 交叉注意力层
+    6. 合并 token 并投影到输出维度
+    """
 
     cross_attn = True
 
@@ -1901,7 +2282,27 @@ class Predictor(PredictorBase):
         patch_size: int,
         input_res: int,
     ) -> dict[str, Tensor]:
-        """Apply attention to the tokens."""
+        """预测器的注意力处理：交叉注意力解码。
+
+        流程：
+        1. 添加位置编码
+        2. 折叠各模态 token
+        3. 分离解码 token（Q）和上下文 token（K, V）
+        4. 可选：打包 token（Flash Attention）
+        5. 逐层应用交叉注意力块
+        6. 可选：解包 token
+        7. 合并解码和上下文 token
+        8. 展开回各模态形状
+
+        Args:
+            x: 模态到张量的映射字典
+            timestamps: 时间戳
+            patch_size: Patch 大小
+            input_res: 输入分辨率
+
+        Returns:
+            各模态的解码 token 字典
+        """
         tokens_only_dict, original_masks_dict, modalities_to_dims_dict = (
             self.split_tokens_masks_and_dims(x)
         )
@@ -1987,40 +2388,48 @@ class Predictor(PredictorBase):
         patch_size: int,
         input_res: int = BASE_GSD,
     ) -> TokensAndMasks:
-        """Generate predictions from encoded token representations.
+        """预测器前向传播：从编码 token 生成掩码位置的预测。
+
+        流程：
+        1. 输入归一化 + 编码器到解码器维度映射
+        2. 用 mask_token 替换待解码位置
+        3. 交叉注意力解码
+        4. 逐波段组投影到输出维度
 
         Args:
-            x: TokensAndMasks containing the encoded tokens to make predictions from
-            timestamps: Timestamps of the tokens
-            patch_size: Patch size of the tokens
-            input_res: Input resolution of the tokens
+            x: 编码器输出的 TokensAndMasks
+            timestamps: 时间戳
+            patch_size: Patch 大小
+            input_res: 输入分辨率
 
         Returns:
-            TokensAndMasks containing the predicted tokens and their masks
+            预测的 TokensAndMasks
         """
         decoder_emedded_dict = x.as_dict()
-        # Apply Input Norms and encoder to decoder embeds to each modality
+        # 步骤1：对每个模态应用输入归一化和编码器到解码器的维度映射
         available_modalities = x.modalities
         modalities_to_process = get_modalities_to_process(
             available_modalities, self.supported_modality_names
         )
         for modality in modalities_to_process:
             x_modality = getattr(x, modality)
-            # Although, we do not account for missing tokens both proj and normalize are on token dimension so there is no mixing with real tokens
-            x_modality = self.input_norm(x_modality)
-            x_modality = self.encoder_to_decoder_embed(x_modality)
+            # 注意：归一化和投影在 token 维度上操作，不会与缺失 token 混合
+            x_modality = self.input_norm(x_modality)  # 输入归一化
+            x_modality = self.encoder_to_decoder_embed(x_modality)  # 维度映射
             masked_modality_name = x.get_masked_modality_name(modality)
             decoder_emedded_dict[modality] = x_modality
             decoder_emedded_dict[masked_modality_name] = getattr(
                 x, masked_modality_name
             )
 
+        # 步骤2：用可学习的 mask_token 替换待解码位置
         tokens_only_dict = self.add_masks(decoder_emedded_dict)
         decoder_emedded_dict.update(tokens_only_dict)
+        # 步骤3：交叉注意力解码
         tokens_and_masks = self.apply_attn(
             decoder_emedded_dict, timestamps, patch_size, input_res
         )
-        # TODO: Factor this out into a more readable function
+        # 步骤4：逐波段组投影到输出维度
         output_dict = {}
         available_modalities = return_modalities_from_dict(tokens_and_masks)
         modalities_to_process = get_modalities_to_process(
@@ -2038,6 +2447,7 @@ class Predictor(PredictorBase):
             num_band_sets = self.tokenization_config.get_num_bandsets(modality)
             for idx in range(num_band_sets):
                 per_channel_modality_data = modality_data[..., idx, :]
+                # 归一化 + 输出投影
                 output_data = self.to_output_embed(self.norm(per_channel_modality_data))
                 per_modality_output_tokens.append(output_data)
             output_dict[modality] = torch.stack(per_modality_output_tokens, dim=-2)
@@ -2047,7 +2457,21 @@ class Predictor(PredictorBase):
 
 @dataclass
 class EncoderConfig(Config):
-    """Configuration for the Encoder."""
+    """FlexiViT 编码器的配置类。
+
+    包含编码器的所有超参数，并提供验证和构建方法。
+
+    关键参数：
+        supported_modality_names: 支持的模态名称列表
+        embedding_size: 嵌入维度
+        max_patch_size: 最大 patch 大小（基准）
+        depth: Transformer 层数
+        num_register_tokens: Register Token 数量
+        use_flash_attn: 是否使用 Flash Attention
+        frozen_patch_embeddings: 是否冻结 Patch 嵌入层
+        band_dropout_rate: Band Dropout 概率
+        output_embedding_size: 可选的输出嵌入维度（改变最终投影维度）
+    """
 
     supported_modality_names: list[str]
 
@@ -2119,7 +2543,18 @@ class EncoderConfig(Config):
 
 @dataclass
 class PredictorConfig(Config):
-    """Configuration for the Predictor."""
+    """FlexiViT 预测器的配置类。
+
+    包含预测器的所有超参数，并提供验证和构建方法。
+
+    关键参数：
+        supported_modality_names: 支持的模态名称列表
+        encoder_embedding_size: 编码器嵌入维度（用于维度映射）
+        decoder_embedding_size: 解码器嵌入维度
+        depth: Transformer 层数
+        output_embedding_size: 可选的输出嵌入维度
+        use_flash_attn: 是否使用 Flash Attention
+    """
 
     supported_modality_names: list[str]
     encoder_embedding_size: int = 16

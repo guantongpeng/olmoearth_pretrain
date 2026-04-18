@@ -1,4 +1,13 @@
-"""Utils for the data module."""
+"""
+数据模块的工具函数集合。
+
+本模块提供数据处理和可视化相关的工具函数，包括：
+- to_cartesian: 将经纬度坐标转换为笛卡尔坐标
+- convert_to_db: 将 Sentinel-1 数据转换为分贝值（dB）
+- update_streaming_stats: 流式更新均值和方差（用于在线统计计算）
+- plot_latlon_distribution: 绘制数据集的地理分布图
+- plot_modality_data_distribution: 绘制模态数据的直方图分布
+"""
 
 import math
 
@@ -9,22 +18,27 @@ import numpy as np
 
 
 def to_cartesian(lat: float, lon: float) -> np.ndarray:
-    """Convert latitude and longitude to Cartesian coordinates.
+    """将经纬度坐标转换为三维笛卡尔坐标（单位球面上的点）。
+
+    转换公式：
+        x = cos(lat) * cos(lon)
+        y = cos(lat) * sin(lon)
+        z = sin(lat)
 
     Args:
-        lat: Latitude in degrees as a float.
-        lon: Longitude in degrees as a float.
+        lat: 纬度（度）。
+        lon: 经度（度）。
 
     Returns:
-        A numpy array of Cartesian coordinates (x, y, z).
+        包含 (x, y, z) 笛卡尔坐标的 numpy 数组。
     """
 
     def validate_lat_lon(lat: float, lon: float) -> None:
-        """Validate the latitude and longitude.
+        """验证经纬度范围的合法性（EPSG:4326 坐标系）。
 
         Args:
-            lat: Latitude in degrees as a float.
-            lon: Longitude in degrees as a float.
+            lat: 纬度（度），范围 [-90, 90]。
+            lon: 经度（度），范围 [-180, 180]。
         """
         assert -90 <= lat <= 90, (
             f"lat out of range ({lat}). Make sure you are in EPSG:4326"
@@ -34,26 +48,26 @@ def to_cartesian(lat: float, lon: float) -> np.ndarray:
         )
 
     def convert_to_radians(lat: float, lon: float) -> tuple:
-        """Convert the latitude and longitude to radians.
+        """将经纬度从度转换为弧度。
 
         Args:
-            lat: Latitude in degrees as a float.
-            lon: Longitude in degrees as a float.
+            lat: 纬度（度）。
+            lon: 经度（度）。
 
         Returns:
-            A tuple of the latitude and longitude in radians.
+            (纬度弧度, 经度弧度) 元组。
         """
         return lat * math.pi / 180, lon * math.pi / 180
 
     def compute_cartesian(lat: float, lon: float) -> tuple:
-        """Compute the Cartesian coordinates.
+        """从弧度制的经纬度计算笛卡尔坐标。
 
         Args:
-            lat: Latitude in degrees as a float.
-            lon: Longitude in degrees as a float.
+            lat: 纬度（弧度）。
+            lon: 经度（弧度）。
 
         Returns:
-            A tuple of the Cartesian coordinates (x, y, z).
+            (x, y, z) 笛卡尔坐标元组。
         """
         x = math.cos(lat) * math.cos(lon)
         y = math.cos(lat) * math.sin(lon)
@@ -61,25 +75,27 @@ def to_cartesian(lat: float, lon: float) -> np.ndarray:
 
         return x, y, z
 
-    validate_lat_lon(lat, lon)
-    lat, lon = convert_to_radians(lat, lon)
-    x, y, z = compute_cartesian(lat, lon)
+    validate_lat_lon(lat, lon)  # 验证经纬度范围
+    lat, lon = convert_to_radians(lat, lon)  # 转换为弧度
+    x, y, z = compute_cartesian(lat, lon)  # 计算笛卡尔坐标
 
     return np.array([x, y, z])
 
 
-# According to the EE, we need to convert Sentinel1 data to dB using 10*log10(x)
-# https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_S1_GRD#description
+# 根据 Earth Engine 文档，Sentinel-1 数据需要使用 10*log10(x) 转换为 dB
+# 参考：https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_S1_GRD#description
 def convert_to_db(data: np.ndarray) -> np.ndarray:
-    """Convert the data to decibels.
+    """将数据转换为分贝值（dB）。
+
+    使用公式：dB = 10 * log10(data)，用于 Sentinel-1 SAR 数据的转换。
 
     Args:
-        data: The data to convert to decibels.
+        data: 待转换的数据数组。
 
     Returns:
-        The data in decibels.
+        转换为 dB 的数据数组。
     """
-    # clip data to 1e-10 to avoid log(0)
+    # 将数据裁剪到最小值 1e-10 以避免 log(0)
     data = np.clip(data, 1e-10, None)
     result = 10 * np.log10(data)
     return result
@@ -91,21 +107,23 @@ def update_streaming_stats(
     current_var: float,
     modality_band_data: np.ndarray,
 ) -> tuple[int, float, float]:
-    """Update the streaming mean and variance for a batch of data.
+    """流式更新均值和方差，用于在线统计计算。
+
+    当数据量过大无法一次性加载时，使用流式更新逐步计算均值和方差。
+    参考：https://www.geeksforgeeks.org/expression-for-mean-and-variance-in-a-running-stream/
 
     Args:
-        current_count: The current count of data points.
-        current_mean: The current mean of the data.
-        current_var: The current variance of the data.
-        modality_band_data: The data for the current modality band.
+        current_count: 当前的数据点计数。
+        current_mean: 当前的均值。
+        current_var: 当前的方差。
+        modality_band_data: 新批次的数据。
 
     Returns:
-        Updated count, mean, and variance for the modality band.
+        更新后的 (count, mean, variance) 元组。
     """
-    band_data_count = np.prod(modality_band_data.shape)
+    band_data_count = np.prod(modality_band_data.shape)  # 新批次的数据点数
 
-    # Compute updated mean and variance with the new batch of data
-    # Reference: https://www.geeksforgeeks.org/expression-for-mean-and-variance-in-a-running-stream/
+    # 使用流式公式更新均值和方差
     new_count = current_count + band_data_count
     new_mean = (
         current_mean
@@ -120,39 +138,59 @@ def update_streaming_stats(
 
 
 def plot_latlon_distribution(latlons: np.ndarray, title: str) -> plt.Figure:
-    """Plot the geographic distribution of the data."""
-    fig = plt.figure(figsize=(12, 8))
-    ax = plt.axes(projection=ccrs.PlateCarree())
+    """绘制数据集的地理分布图。
 
-    # Add map features
+    在全球地图上以散点图形式展示样本的经纬度分布。
+
+    Args:
+        latlons: 形状为 (N, 2) 的数组，每行为 [纬度, 经度]。
+        title: 图表标题。
+
+    Returns:
+        matplotlib Figure 对象。
+    """
+    fig = plt.figure(figsize=(12, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree())  # 使用 PlateCarree 投影
+
+    # 添加地图特征
     ax.add_feature(cfeature.COASTLINE)
     ax.add_feature(cfeature.LAND, alpha=0.1)
     ax.add_feature(cfeature.OCEAN, alpha=0.1)
 
-    # Plot the data points
+    # 绘制数据点散点图
     ax.scatter(
-        latlons[:, 1],
-        latlons[:, 0],
+        latlons[:, 1],  # 经度
+        latlons[:, 0],  # 纬度
         transform=ccrs.PlateCarree(),
         alpha=0.5,
         s=0.01,
     )
 
-    ax.set_global()  # Show the entire globe
+    ax.set_global()  # 显示全球范围
     ax.gridlines()
     ax.set_title(title)
     return fig
 
 
 def plot_modality_data_distribution(modality: str, modality_data: dict) -> plt.Figure:
-    """Plot the data distribution."""
+    """绘制模态数据的直方图分布。
+
+    为每个波段绘制一个直方图子图。
+
+    Args:
+        modality: 模态名称。
+        modality_data: 字典，键为波段名，值为该波段的数据数组。
+
+    Returns:
+        matplotlib Figure 对象。
+    """
     fig, axes = plt.subplots(
         len(modality_data), 1, figsize=(10, 5 * len(modality_data))
     )
     if len(modality_data) == 1:
-        axes = [axes]
+        axes = [axes]  # 单波段时确保 axes 为列表
     for ax, (band, values) in zip(axes, modality_data.items()):
-        ax.hist(values, bins=50, alpha=0.75)
+        ax.hist(values, bins=50, alpha=0.75)  # 绘制直方图
         ax.set_title(f"{modality} - {band}")
         ax.set_xlabel("Value")
         ax.set_ylabel("Frequency")

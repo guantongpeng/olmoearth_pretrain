@@ -1,5 +1,11 @@
 # type: ignore
 # ruff: noqa
+"""Presto 模型单文件实现。
+
+Presto 模型的核心架构代码（IBM Corp. 2024），
+包含编码器和解码器等组件。
+此文件为外部代码的本地副本，不做修改。
+"""
 
 import math
 from collections import OrderedDict

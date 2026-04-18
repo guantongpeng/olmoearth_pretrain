@@ -1,4 +1,8 @@
-"""Post-process ingested Landsat data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 Sentinel-1 SAR 数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 Sentinel-1 合成孔径雷达(SAR)数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+Sentinel-1 提供 C 波段 SAR 数据，包含 VV 和 VH 极化信息。
+"""
 
 import argparse
 import multiprocessing

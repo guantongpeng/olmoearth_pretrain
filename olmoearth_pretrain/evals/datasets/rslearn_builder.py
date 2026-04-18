@@ -1,9 +1,21 @@
-"""Build rslearn datasets for eval using RslearnDataModule via jsonargparse.
+"""使用 RslearnDataModule 通过 jsonargparse 构建 rslearn 评估数据集。
 
-Instead of manually instantiating DataInput, Task, SplitConfig, and ModelDataset
-individually, we parse the `data` section of model.yaml into a full
-RslearnDataModule. This keeps us in sync with rslearn's construction logic
-(config merging, dataset setup, etc.) while allowing eval-specific overrides.
+本模块不手动逐个实例化 DataInput、Task、SplitConfig 和 ModelDataset，
+而是解析 model.yaml 的 `data` 段为完整的 RslearnDataModule。
+这确保了与 rslearn 构造逻辑（配置合并、数据集初始化等）的一致性，
+同时允许评估特有的覆盖（如 split/tags/groups）。
+
+主要组件：
+- parse_model_config: 加载并解析 model.yaml，替换环境变量
+- build_model_dataset: 从 model.yaml 构建评估数据集
+- get_task_info: 从 model.yaml 获取任务类型信息
+- get_modality_layers: 从 model.yaml 获取模态层名称列表
+- load_and_build_dataset: 高级入口：解析 + 构建一步完成
+- build_dataset_from_registry_entry: 从注册表条目构建数据集
+
+设计要点：
+- 剥离 rslearn 的 Normalize 变换，因为归一化由 OlmoEarth 评估流程处理
+- 支持标签和分组过滤以实现自定义数据划分
 """
 
 from __future__ import annotations

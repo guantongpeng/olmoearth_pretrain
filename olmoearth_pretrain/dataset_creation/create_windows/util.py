@@ -1,4 +1,10 @@
-"""Utilities for creating windows."""
+"""窗口创建的通用工具函数。
+
+本模块提供创建训练窗口时使用的通用工具，包括：
+    - 多进程并行处理
+    - 窗口去重和过滤
+    - 坐标转换和验证
+"""
 
 import functools
 import multiprocessing

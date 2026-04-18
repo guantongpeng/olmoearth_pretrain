@@ -1,4 +1,15 @@
-"""Launch script for evaluation allowing you to easily run all the evals for your model by just pointing at your training script."""
+"""评估启动脚本，通过指向训练脚本即可运行所有评估。
+
+本模块是 OlmoEarth Pretrain 评估的入口点，支持：
+    - KNN 评估和线性探针评估
+    - 微调评估
+    - 嵌入诊断
+    - 从用户训练脚本加载配置
+
+使用方式:
+    通过环境变量 TRAIN_SCRIPT_PATH 指定训练脚本路径，
+    本模块自动加载配置并运行所有下游评估任务。
+"""
 
 import importlib.util
 import os
@@ -323,7 +334,7 @@ EVAL_TASKS = {
         input_modalities=[Modality.SENTINEL2_L2A.name],
         epochs=50,
         eval_mode=EvalMode.LINEAR_PROBE,
-        primary_metric=EvalMetric.OVERALL_ACC,
+        primary_metric=EvalMetric.ACCURACY,
     ),
     "forest_loss_driver": DownstreamTaskConfig(
         dataset="forest_loss_driver",

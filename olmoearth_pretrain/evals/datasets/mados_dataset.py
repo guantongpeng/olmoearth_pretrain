@@ -1,4 +1,16 @@
-"""MADOS dataset class."""
+"""MADOS 海洋分割评估数据集模块。
+
+MADOS (Marine Debris Ocean Source) 数据集用于海洋漂浮物分割任务，
+基于 Sentinel-2 L2A 数据，原始 240x240 图像被分割为 80x80 的瓦片。
+
+主要组件：
+- PrepMADOSDataset: 数据预处理器，从原始 TIFF 文件读取并转换为张量
+- MADOSDataset: 评估数据集类，返回 MaskedOlmoEarthSample 格式数据
+- process_mados: 便捷函数，执行预处理并保存为 .pt 文件
+- split_and_filter_tensors: 将 240x240 图像分割为 3x3 的 80x80 瓦片
+
+注意：缺失波段在保存张量前已完成插补，因此加载时无需额外插补。
+"""
 
 import json
 import os

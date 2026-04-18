@@ -1,4 +1,8 @@
-"""Helper functions to convert multitemporal rasters into OlmoEarth Pretrain dataset."""
+"""多时相栅格数据转换为 OlmoEarth Pretrain 数据集的辅助函数。
+
+本模块提供将多时相栅格数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式的
+通用工具函数，被 sentinel2、landsat 等模块共享使用。
+"""
 
 import csv
 import logging

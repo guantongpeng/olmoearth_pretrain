@@ -1,4 +1,14 @@
-"""Simple set up of latent predictor with two predictors, following Galileo."""
+"""Galileo 模型模块，基于双预测器的自监督学习。
+
+本模块实现 Galileo 风格的自监督预训练模型，核心思想是：
+- 使用两个独立的解码器（decoder_a 和 decoder_b）
+- 编码器同时为两个解码器提供潜在表示
+- 目标编码器（target_encoder）提供回归目标
+- 两个解码器分别从不同的增强视图进行预测
+
+这种双预测器设计可以提高模型的鲁棒性和泛化能力，
+借鉴了 Galileo 地球基础模型的思想。
+"""
 
 import logging
 from copy import deepcopy
@@ -22,9 +32,25 @@ logger = logging.getLogger(__name__)
 
 
 class Galileo(nn.Module, DistributedMixins):
-    """Galileo Style."""
+    """Galileo 风格的自监督学习模型，使用双预测器。
 
-    supports_multiple_modalities_at_once = True
+    核心组件：
+        encoder: 编码器，处理被掩码的输入
+        decoder_a: 第一个解码器
+        decoder_b: 第二个解码器（decoder_a 的深拷贝）
+        target_encoder: 目标编码器（encoder 的深拷贝，参数冻结）
+        reconstructor: 可选的重建器
+
+    关键设计：
+        - 两个解码器分别处理不同的增强视图
+        - target_encoder 参数冻结，通过 EMA 更新
+        - 支持 FSDP 分布式训练
+
+    使用场景：
+        需要双视图自监督训练的遥感基础模型。
+    """
+
+    supports_multiple_modalities_at_once = True  # 标记：支持同时处理多个模态
 
     def __init__(
         self,
@@ -32,32 +58,38 @@ class Galileo(nn.Module, DistributedMixins):
         decoder: torch.nn.Module,
         reconstructor: torch.nn.Module | None = None,
     ):
-        """Initialize the Galileo Style.
+        """初始化 Galileo 模型。
 
         Args:
-            encoder: The encoder to use.
-            decoder: The decoder to use.
-            reconstructor: Optional reconstructor for auto-encoding.
+            encoder: 在线编码器模块
+            decoder: 解码器模块（将被深拷贝为 decoder_a 和 decoder_b）
+            reconstructor: 可选的重建器模块
         """
         super().__init__()
         self.encoder = encoder
-        self.decoder_a = decoder
-        self.decoder_b = deepcopy(decoder)
-        self.target_encoder = deepcopy(self.encoder)
+        self.decoder_a = decoder  # 第一个解码器
+        self.decoder_b = deepcopy(decoder)  # 第二个解码器（深拷贝）
+        self.target_encoder = deepcopy(self.encoder)  # 目标编码器（深拷贝，参数冻结）
         self.reconstructor = reconstructor
         for p in self.target_encoder.parameters():
-            p.requires_grad = False
+            p.requires_grad = False  # 冻结目标编码器参数
 
     def forward_a(
         self, x: MaskedOlmoEarthSample, patch_size: int
     ) -> tuple[TokensAndMasks, TokensAndMasks, torch.Tensor, TokensAndMasks | None]:
-        """Forward pass for the Latent MIM Style.
+        """使用解码器 A 的前向传播。
+
+        流程：编码 → 可选重建 → 解码器 A 预测
+
+        Args:
+            x: 被掩码的 OlmoEarth 样本
+            patch_size: Patch 大小
 
         Returns:
-            latent: embeddings from encoder
-            decoded: predictions from decoder for masked tokens
-            latent_projected_and_pooled: pooled tokens for contrastive loss
-            reconstructed: MAE predictions if enabled
+            latent: 编码器嵌入
+            decoded: 解码器 A 的预测
+            latent_projected_and_pooled: 投影池化后的 token
+            reconstructed: 重建器输出（若启用）
         """
         # TODO: Input And outputs here are not consistent between encoder and decoder need a tokensandmaks++
         output_dict = self.encoder(x, patch_size=patch_size)
@@ -75,13 +107,19 @@ class Galileo(nn.Module, DistributedMixins):
     def forward_b(
         self, x: MaskedOlmoEarthSample, patch_size: int
     ) -> tuple[TokensAndMasks, TokensAndMasks, torch.Tensor, TokensAndMasks | None]:
-        """Forward pass for the Latent MIM Style.
+        """使用解码器 B 的前向传播。
+
+        流程：编码 → 可选重建 → 解码器 B 预测
+
+        Args:
+            x: 被掩码的 OlmoEarth 样本
+            patch_size: Patch 大小
 
         Returns:
-            latent: embeddings from encoder
-            decoded: predictions from decoder for masked tokens
-            latent_projected_and_pooled: pooled tokens for contrastive loss
-            reconstructed: MAE predictions if enabled
+            latent: 编码器嵌入
+            decoded: 解码器 B 的预测
+            latent_projected_and_pooled: 投影池化后的 token
+            reconstructed: 重建器输出（若启用）
         """
         # TODO: Input And outputs here are not consistent between encoder and decoder need a tokensandmaks++
         output_dict = self.encoder(x, patch_size=patch_size)
@@ -104,7 +142,16 @@ class Galileo(nn.Module, DistributedMixins):
     ) -> dict[
         str, tuple[TokensAndMasks, TokensAndMasks, torch.Tensor, TokensAndMasks | None]
     ]:
-        """Forward pass for the Galileo Style."""
+        """Galileo 前向传播，分别使用两个解码器处理两个输入。
+
+        Args:
+            input_a: 第一个增强视图的掩码样本
+            input_b: 第二个增强视图的掩码样本
+            patch_size: Patch 大小
+
+        Returns:
+            包含 'a' 和 'b' 两个键的字典，分别对应两个解码器的输出
+        """
         return {
             "a": self.forward_a(input_a, patch_size),
             "b": self.forward_b(input_b, patch_size),
@@ -145,7 +192,18 @@ class Galileo(nn.Module, DistributedMixins):
 
 @dataclass
 class GalileoConfig(Config):
-    """Configuration for the Galileo model."""
+    """Galileo 模型的配置类。
+
+    验证规则：
+    - 编码器和解码器必须支持相同的模态
+    - 编码器和解码器的最大序列长度必须一致
+    - 编码器输出嵌入大小与解码器的编码器嵌入大小必须一致
+
+    Attributes:
+        encoder_config: 编码器配置
+        decoder_config: 解码器配置
+        reconstructor_config: 可选的重建器配置
+    """
 
     encoder_config: Config
     decoder_config: Config

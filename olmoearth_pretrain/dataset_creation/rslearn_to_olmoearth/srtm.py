@@ -1,4 +1,8 @@
-"""Post-process ingested SRTM elevation data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 SRTM 高程数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 SRTM（航天飞机雷达地形任务）高程数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+SRTM 提供全球近 30 米分辨率的数字高程模型(DEM)。
+"""
 
 import argparse
 import csv

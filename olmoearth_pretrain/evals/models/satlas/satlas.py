@@ -1,4 +1,12 @@
-"""OlmoEarth Pretrain wrapper for Satlas."""
+"""Satlas 遥感基础模型与 OlmoEarth Pretrain 的集成包装器。
+
+Satlas 是一种用于大规模遥感分析的预训练基础模型。
+本模块提供 Satlas 模型与 OlmoEarth 评估框架的集成。
+
+主要组件：
+- Satlas: Satlas 模型类
+- SatlasConfig: Satlas 配置数据类
+"""
 
 import logging
 from dataclasses import dataclass

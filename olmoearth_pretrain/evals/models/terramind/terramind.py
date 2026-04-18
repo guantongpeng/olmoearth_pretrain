@@ -1,4 +1,13 @@
-"""Terramind models."""
+"""Terramind 地球观测基础模型集成。
+
+Terramind 是一种用于地球观测的预训练基础模型，
+支持多种尺寸变体。
+
+主要组件：
+- Terramind: Terramind 模型类
+- TerramindConfig: Terramind 配置数据类
+- TERRAMIND_SIZES: 可用尺寸列表
+"""
 
 import logging
 import math

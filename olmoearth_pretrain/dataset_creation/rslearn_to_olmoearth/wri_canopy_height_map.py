@@ -1,4 +1,8 @@
-"""Post-process ingested WRI Canopy Height Map data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 WRI 冠层高度图数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 WRI（世界资源研究所）冠层高度图数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+WRI 冠层高度图提供全球森林冠层高度估计（约 30 米分辨率）。
+"""
 
 import argparse
 import csv

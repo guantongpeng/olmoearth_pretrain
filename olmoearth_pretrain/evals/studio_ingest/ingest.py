@@ -1,44 +1,35 @@
-"""Main ingestion logic for Studio datasets.
+"""Studio 数据集核心摄取逻辑。
 
-This module provides the core functionality to ingest an rslearn dataset
-from Studio/GCS into the OlmoEarth eval system on Weka.
+本模块提供从 Studio/GCS 将 rslearn 数据集摄取到 OlmoEarth 评估系统的核心功能。
 
-Ingestion Flow:
---------------
-1. Create the destination directory on Weka
-2. Copy data from source to destination
-3. Compute normalization statistics
-4. Create metadata.json in the dataset directory
-5. Register the dataset in the central registry
+摄取流程：
+1. 在 Weka 上创建目标目录
+2. 从源路径复制数据到目标路径
+3. 计算归一化统计量
+4. 在数据集目录中创建元数据
+5. 在中央注册表中注册数据集
 
-Design Decisions:
-----------------
-- We copy data rather than reference it, for:
-  - Faster access (Weka is faster than GCS for our workloads)
-  - Immutability (source can change, our copy won't)
-  - Provenance (we record where it came from)
+设计决策：
+- 复制数据而非引用，原因：
+  - 更快的访问速度（Weka 比 GCS 快）
+  - 不可变性（源可能变化，副本不会）
+  - 可溯源性（记录来源信息）
+- 保留 rslearn 结构，使现有加载器正常工作
+- 在摄取时（而非按需）计算归一化统计量，原因：
+  - 统计量计算一次，重复使用
+  - 摄取是捕获数据问题的良好时机
+  - 避免评估时重复计算
 
-- We preserve rslearn structure in the copy, so existing loaders work
+回滚处理：
+- 不注册不完整的数据集
+- Weka 上的部分数据需要手动清理
 
-- We compute normalization stats during ingestion, not on-demand, because:
-  - Stats are computed once and reused many times
-  - Ingestion is a good time to catch data issues
-  - Avoids recomputation overhead during evaluation
-
-Rollback Handling:
------------------
-If ingestion fails partway through:
-- We don't register incomplete datasets
-- Partial data on Weka should be cleaned up manually
-- TODO: Add automatic cleanup on failure
-
-Todo:
------
-- [ ] Add progress bar for copy operation
-- [ ] Add resumable copying for large datasets
-- [ ] Add automatic cleanup on failure
-- [ ] Add dry-run mode
-- [ ] Support incremental updates (add new samples to existing dataset)
+主要函数：
+- ingest_dataset: 主摄取函数
+- copy_dataset: 数据集复制（自动选择最快方法）
+- scan_windows_and_splits: 扫描窗口并确定划分
+- create_missing_splits: 创建缺失的数据划分
+- write_split_tags: 将划分标签写入窗口元数据
 """
 
 from __future__ import annotations

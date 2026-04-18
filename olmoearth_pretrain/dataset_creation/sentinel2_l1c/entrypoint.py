@@ -1,4 +1,8 @@
-"""Entrypoint for Sentinel-2 L1C jobs."""
+"""Sentinel-2 L1C 数据处理作业的入口点。
+
+本模块提供 Sentinel-2 L1C 级别数据处理的入口脚本，
+负责从 Google Cloud Storage 下载和处理原始 Sentinel-2 L1C 数据。
+"""
 
 import argparse
 import multiprocessing

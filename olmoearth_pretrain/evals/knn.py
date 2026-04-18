@@ -1,4 +1,21 @@
-"""KNN evals of OlmoEarth Pretrain models."""
+"""KNN 评估模块：对 OlmoEarth 预训练模型进行 K 近邻评估。
+
+本模块实现了 KNN 分类评估，用于评估预训练模型的下游任务迁移能力。
+支持单标签和多标签分类，以及 bootstrap 重采样估计不确定性。
+
+主要组件：
+- run_knn: 主函数，运行 KNN 评估
+- _run_knn_for_k: 核心函数，执行 KNN 分类（支持分块处理以控制内存）
+- _bootstrap_knn_test: 对测试集进行 bootstrap 重采样以估计不确定性
+
+使用场景：
+  1. 先通过 get_embeddings 提取嵌入
+  2. 调用 run_knn 执行 KNN 分类并获取评估结果
+  3. 可通过 n_bootstrap 参数启用 bootstrap 不确定性估计
+
+核心算法：
+  使用余弦相似度作为距离度量，对 K 个最近邻进行温度加权投票。
+"""
 
 from __future__ import annotations
 

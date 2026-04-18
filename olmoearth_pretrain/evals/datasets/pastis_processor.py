@@ -1,4 +1,18 @@
-"""Script to process the pastis dataset."""
+"""PASTIS-R 数据集预处理模块。
+
+提供 PASTIS-R 数据集的预处理功能，将原始 HDF5/NPY 文件转换为
+可直接加载的 PyTorch 张量格式 (.pt 文件)。
+
+主要组件：
+- PASTISRProcessor: 数据预处理器
+  - 将逐时相 S2/S1 图像聚合为月度均值
+  - 对 S2 缺失波段进行插补 (B1->B2, B9->B8A, B10->B11)
+  - 将 128x128 图像分割为 4 个 64x64 子图
+  - 处理 PASTIS 的 19 类标签，将第 19 类(空白标签)转换为忽略标签
+  - 按 fold 划分数据集：fold 1-3 为训练集，fold 4 为验证集，fold 5 为测试集
+- process_pastis: 便捷函数，执行预处理并保存为 .pt 文件
+- process_pastis_orig_size: 便捷函数，保留原始 128x128 尺寸
+"""
 
 import argparse
 import json
@@ -18,11 +32,21 @@ logger = logging.getLogger(__name__)
 
 
 class PASTISRProcessor:
-    """Process PASTIS-R dataset into PyTorch objects.
+    """PASTIS-R 数据集预处理器。
 
-    This class processes the PASTIS-R dataset into PyTorch objects.
-    It loads the S2 and S1 images, and the annotations, and splits them into 4 images.
-    It also imputes the missing bands in the S2 images.
+    将 PASTIS-R 原始数据（S2/S1 图像 + 标注）处理为 PyTorch 张量格式。
+    主要处理步骤：
+    1. 加载 S2 和 S1 图像及标注
+    2. 对 S2 缺失波段进行插补
+    3. 将逐时相图像聚合为月度均值
+    4. 可选：将 128x128 图像分割为 4 个 64x64 子图
+    5. 按 fold 划分并保存
+
+    关键属性：
+        data_dir: PASTIS-R 原始数据目录
+        output_dir: 输出目录
+        all_months: 数据集中的所有月份标识
+        resize_to_64: 是否将 128x128 缩小为 64x64
     """
 
     def __init__(self, data_dir: str, output_dir: str, resize_to_64: bool = True):
@@ -57,22 +81,35 @@ class PASTISRProcessor:
         self.resize_to_64 = resize_to_64
 
     def impute(self, img: torch.Tensor) -> torch.Tensor:
-        """Impute missing bands in Sentinel-2 images."""
+        """对 Sentinel-2 图像中缺失的波段进行插补。
+
+        PASTIS 的 S2 数据只有 10 个波段，需要插补到 13 个波段以匹配 OlmoEarth 格式。
+        插补规则：
+        - B1 (海岸气溶胶) <- B2 (蓝)，已插补
+        - B9 (水汽) <- B8A (窄近红外)，已插补
+        - B10 (卷云) <- B11 (短波红外1)，已插补
+
+        Args:
+            img: 10 波段 S2 图像，形状 (10, H, W)
+
+        Returns:
+            13 波段 S2 图像，形状 (13, H, W)
+        """
         img = torch.stack(
             [
-                img[0, ...],  # fill B1 with B2, IMPUTED!
-                img[0, ...],  # fill B2 with B2
-                img[1, ...],  # fill B3 with B3
-                img[2, ...],  # fill B4 with B4
-                img[3, ...],  # fill B5 with B5
-                img[4, ...],  # fill B6 with B6
-                img[5, ...],  # fill B7 with B7
-                img[6, ...],  # fill B8 with B8
-                img[7, ...],  # fill B8A with B8A
-                img[7, ...],  # fill B9 with B8A, IMPUTED!
-                img[8, ...],  # fill B10 with B11, IMPUTED!
-                img[8, ...],  # fill B11 with B11
-                img[9, ...],  # fill B12 with B12
+                img[0, ...],  # B1 <- B2 (已插补)
+                img[0, ...],  # B2 <- B2
+                img[1, ...],  # B3 <- B3
+                img[2, ...],  # B4 <- B4
+                img[3, ...],  # B5 <- B5
+                img[4, ...],  # B6 <- B6
+                img[5, ...],  # B7 <- B7
+                img[6, ...],  # B8 <- B8
+                img[7, ...],  # B8A <- B8A
+                img[7, ...],  # B9 <- B8A (已插补)
+                img[8, ...],  # B10 <- B11 (已插补)
+                img[8, ...],  # B11 <- B11
+                img[9, ...],  # B12 <- B12
             ]
         )
         return img
@@ -80,7 +117,22 @@ class PASTISRProcessor:
     def aggregate_months(
         self, modality_name: str, images: torch.Tensor, dates: dict[str, int]
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Aggregate images into monthly averages."""
+        """将逐时相图像聚合为月度均值。
+
+        按月份分组图像，计算每月均值，最多保留前 12 个月。
+        对 S2 数据会自动进行缺失波段插补。
+
+        注意：对 S2 数据取月度均值可能不是最佳选择，
+        因为云覆盖场景会导致均值偏差。
+
+        Args:
+            modality_name: 模态名称 (SENTINEL2_L2A 或 SENTINEL1)
+            images: 时相图像数据
+            dates: 日期索引到日期值的映射
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: (月度均值图像, 月份列表)
+        """
         if (
             modality_name != Modality.SENTINEL2_L2A.name
             and modality_name != Modality.SENTINEL1.name
@@ -120,7 +172,14 @@ class PASTISRProcessor:
         return torch.stack(img_list), torch.tensor(month_list, dtype=torch.long)
 
     def process_sample(self, sample: dict[str, Any]) -> dict[str, torch.Tensor] | None:
-        """Process a single sample from metadata."""
+        """处理单个样本：加载数据、聚合月份、分割图像。
+
+        Args:
+            sample: 元数据字典，包含 patch ID、日期、fold 等信息
+
+        Returns:
+            处理后的数据字典，如果文件缺失则返回 None
+        """
         properties = sample["properties"]
         dates = properties["dates-S2"]
         patch_id = properties["ID_PATCH"]
@@ -186,7 +245,12 @@ class PASTISRProcessor:
             }
 
     def process(self) -> None:
-        """Process the PASTIS-R dataset."""
+        """处理完整 PASTIS-R 数据集。
+
+        读取元数据文件，使用多线程并行处理所有样本，
+        按 fold 分组并合并为训练/验证/测试集，
+        然后逐样本保存为 .pt 文件。
+        """
         with open(self.data_dir / "metadata.geojson") as f:
             meta_data = json.load(f)
 
@@ -284,7 +348,12 @@ class PASTISRProcessor:
 
 
 def process_pastis(data_dir: str, output_dir: str) -> None:
-    """Process PASTIS-R dataset."""
+    """处理 PASTIS-R 数据集，将 128x128 分割为 64x64 子图。
+
+    Args:
+        data_dir: PASTIS-R 原始数据目录
+        output_dir: 输出目录
+    """
     processor = PASTISRProcessor(
         data_dir=data_dir,
         output_dir=output_dir,
@@ -296,7 +365,12 @@ def process_pastis_orig_size(
     data_dir: str,
     output_dir: str,
 ) -> None:
-    """Process PASTIS-R dataset."""
+    """处理 PASTIS-R 数据集，保留原始 128x128 尺寸。
+
+    Args:
+        data_dir: PASTIS-R 原始数据目录
+        output_dir: 输出目录
+    """
     processor = PASTISRProcessor(
         data_dir=data_dir, output_dir=output_dir, resize_to_64=False
     )

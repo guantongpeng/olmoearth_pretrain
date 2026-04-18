@@ -1,4 +1,8 @@
-"""Go from tiles_by_category.json from osm_sampling.go to longitude/latitude list."""
+"""将 osm_sampling.go 生成的 tiles_by_category.json 转换为经纬度列表。
+
+本模块从 OpenStreetMap 分类瓦片 JSON 文件中提取经纬度坐标，
+用于后续的训练窗口创建。
+"""
 
 import argparse
 import json

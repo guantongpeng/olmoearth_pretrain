@@ -1,4 +1,8 @@
-"""Create windows at random locations."""
+"""随机位置创建训练窗口。
+
+本脚本在全球范围内随机选择位置创建训练窗口，
+适用于大规模数据集的均匀采样。
+"""
 
 import argparse
 import random

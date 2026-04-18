@@ -1,4 +1,13 @@
-"""Floods eval dataset, based on Sen1Floods11."""
+"""Sen1Floods11 洪水分割评估数据集模块。
+
+基于 Sen1Floods11 数据集，使用 Sentinel-1 SAR 数据进行洪水区域分割。
+原始 512x512 图像被分割为 64x64 的瓦片 (tiles)，并过滤掉没有正标签的瓦片。
+
+主要组件：
+- Sen1Floods11Processor: 数据预处理器，将原始数据转换为评估格式
+- Sen1Floods11Dataset: 评估数据集类，返回 MaskedOlmoEarthSample 格式数据
+- get_sen1floods11: 便捷函数，执行预处理并保存为 .pt 文件
+"""
 
 import json
 from pathlib import Path

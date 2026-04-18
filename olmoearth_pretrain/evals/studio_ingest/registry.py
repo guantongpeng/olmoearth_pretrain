@@ -1,12 +1,9 @@
-"""Registry I/O for eval datasets.
+"""评估数据集注册表 I/O 模块。
 
-This module handles reading and writing the eval dataset registry,
-which is a JSON file stored on Weka that tracks all available
-evaluation datasets.
+本模块处理评估数据集注册表的读写，注册表是存储在 Weka 上的 JSON 文件，
+追踪所有可用的评估数据集。
 
-Registry Structure:
-------------------
-The registry.json file contains:
+注册表结构：
 {
     "version": "1.0",
     "updated_at": "2024-01-15T10:30:00Z",
@@ -17,23 +14,21 @@ The registry.json file contains:
     }
 }
 
-Concurrency Considerations:
---------------------------
-- The registry is a single JSON file, so concurrent writes could cause issues
-- For now, we assume single-writer (manual ingestion is not concurrent)
-- Future: Could add file locking or move to a database
+并发考虑：
+- 注册表是单一 JSON 文件，并发写入可能导致问题
+- 目前假设单写者（手动摄取不是并发的）
+- 未来：可添加文件锁或迁移到数据库
 
-Error Handling:
---------------
-- If registry doesn't exist, we create it on first write
-- If registry is corrupted, we raise an error (don't silently overwrite)
-- All writes are atomic (write to temp, then rename)
+错误处理：
+- 如果注册表不存在，首次写入时创建
+- 如果注册表损坏，抛出错误（不静默覆盖）
+- 所有写入都是原子的（先写临时文件，再重命名）
 
-Todo:
------
-- [ ] Add file locking for concurrent access
-- [ ] Add backup before write
-- [ ] Add schema version migration
+主要组件：
+- Registry: 注册表数据结构类
+- load_registry: 加载注册表的便捷函数
+- get_dataset_entry: 按名称获取数据集条目
+- list_dataset_names: 列出所有数据集名称
 """
 
 from __future__ import annotations

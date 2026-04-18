@@ -1,4 +1,8 @@
-"""Post-process ingested WorldCereal data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 WorldCereal 农作物分类数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 WorldCereal 数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+WorldCereal 提供全球农作物和非农作物分类产品。
+"""
 
 import argparse
 import csv

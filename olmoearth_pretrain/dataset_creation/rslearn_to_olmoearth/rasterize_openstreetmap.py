@@ -1,4 +1,8 @@
-"""Create openstreetmap_raster from openstreetmap in the OlmoEarth Pretrain dataset."""
+"""从 OpenStreetMap 矢量数据创建栅格化的 openstreetmap_raster 到 OlmoEarth Pretrain 数据集。
+
+本模块将 OpenStreetMap 的矢量数据栅格化为与遥感影像对齐的栅格格式，
+便于训练时的数据加载和模态对齐。
+"""
 
 import argparse
 import csv

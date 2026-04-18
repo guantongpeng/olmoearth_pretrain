@@ -1,4 +1,13 @@
-"""OlmoEarth Pretrain wrapper for Prithvi v2."""
+"""Prithvi v2 遥感基础模型与 OlmoEarth Pretrain 的集成包装器。
+
+Prithvi v2 是 IBM 开发的遥感基础模型，基于 MAE 架构，
+支持多种模型尺寸变体。
+
+主要组件：
+- PrithviV2: Prithvi v2 模型类
+- PrithviV2Config: Prithvi v2 配置数据类
+- PrithviV2Models: 可用模型尺寸枚举
+"""
 
 import math
 from dataclasses import dataclass

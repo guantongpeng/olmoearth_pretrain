@@ -1,7 +1,11 @@
 # mypy: ignore-errors
 # fmt: off
 
-"""Copied from https://github.com/nasaharvest/galileo/blob/main/single_file_galileo.py."""
+"""Galileo 模型单文件实现。源自 https://github.com/nasaharvest/galileo/blob/main/single_file_galileo.py
+
+Galileo 地球观测基础模型的核心架构代码。
+此文件为外部代码的本地副本，不做修改。
+"""
 
 import collections.abc
 import itertools

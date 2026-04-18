@@ -1,4 +1,19 @@
-"""Model that performs spatial attention and temporal attention separately."""
+"""时空（Spatial-Temporal）分离注意力模型模块。
+
+本模块实现了将空间注意力和时间注意力分离执行的 Transformer 模型，
+是 FlexiViT 的一种变体。核心思想是：
+- 空间注意力：在每个时间步内，token 之间进行空间维度的注意力
+- 时间注意力：在每个空间位置上，token 之间进行时间维度的注意力
+- 交替执行：偶数层执行时间注意力，奇数层执行空间注意力
+- 窗口注意力：可选的局部窗口注意力替代全局空间注意力
+
+主要组件：
+- AttentionMode: 注意力模式枚举（FULL/SPATIAL/TEMPORAL/WINDOWED）
+- STBase: 时空模型的基类，提供 token 折叠/展开的通用方法
+- STEncoder: 时空分离编码器
+- STPredictor: 时空分离预测器
+- STEncoderConfig/STPredictorConfig: 对应的配置类
+"""
 
 import logging
 import math
@@ -35,7 +50,13 @@ logger = logging.getLogger(__name__)
 
 
 class AttentionMode(Enum):
-    """Mode to perform attention."""
+    """注意力模式枚举，定义不同类型的注意力计算方式。
+
+    - FULL: 全局注意力，所有 token 之间互相注意
+    - SPATIAL: 空间注意力，每个时间步内的空间 token 互相注意
+    - TEMPORAL: 时间注意力，每个空间位置上的时间 token 互相注意
+    - WINDOWED: 窗口注意力，空间维度使用局部窗口，时间维度使用全局注意力
+    """
 
     FULL = 0
     SPATIAL = 1
@@ -45,7 +66,18 @@ class AttentionMode(Enum):
 
 @experimental()
 class STBase(nn.Module):
-    """STBase is a base class for ST models."""
+    """时空分离注意力模型的基类。
+
+    提供将多模态 token 在不同维度上折叠和展开的通用方法，
+    以支持空间/时间/窗口等不同的注意力模式。
+
+    关键方法：
+        collapse_and_combine: 将各模态 token 折叠为统一的 (tokens, masks) 张量对
+        split_and_expand_per_modality: 将统一张量展开回各模态的原始形状
+        collapse_and_combine_full/spatial/temporal/windowed: 不同注意力模式的折叠实现
+
+    注意：此类标记为 @experimental()，API 可能变更。
+    """
 
     cross_attn: bool = False
 
@@ -726,7 +758,21 @@ class STBase(nn.Module):
 
 @experimental()
 class STEncoder(STBase):
-    """Encoder module that processes masked input samples into token representations."""
+    """时空分离注意力编码器，将掩码输入处理为 token 表示。
+
+    在标准 FlexiViT 编码器的基础上，将注意力层改为空间/时间分离执行。
+    支持 fuse_layers 参数实现空间注意力→全局注意力→交叉注意力的融合策略。
+
+    关键属性：
+        patch_embeddings: 多模态 patch 嵌入层
+        composite_encodings: 复合位置编码层
+        blocks: Transformer 注意力块列表
+        project_and_aggregate: 投影和聚合模块
+        fuse_layers: 融合层数量（控制空间→全局→交叉注意力的切换）
+        layer_attention_modes: 每层的注意力模式配置
+
+    注意：此类标记为 @experimental()，API 可能变更。
+    """
 
     cross_attn: bool = False
 
@@ -1154,7 +1200,19 @@ class STEncoder(STBase):
 
 @experimental()
 class STPredictor(STBase):
-    """Predictor module that generates predictions from encoded tokens."""
+    """时空分离注意力预测器，从编码 token 生成预测。
+
+    使用交叉注意力机制：待解码的 token 作为查询，
+    编码器输出的未掩码 token 作为键和值。
+
+    关键属性：
+        encoder_to_decoder_embed: 编码器到解码器的嵌入映射
+        mask_token: 可学习的掩码 token（用于替换待解码位置）
+        to_output_embed: 输出投影层
+        input_norm: 输入归一化层
+
+    注意：此类标记为 @experimental()，API 可能变更。
+    """
 
     cross_attn = True
 
@@ -1499,7 +1557,18 @@ class STPredictor(STBase):
 
 @dataclass
 class STEncoderConfig(Config):
-    """Configuration for the STEncoder."""
+    """时空分离注意力编码器的配置类。
+
+    关键参数：
+        supported_modality_names: 支持的模态名称列表
+        embedding_size: 嵌入维度
+        max_patch_size: 最大 patch 大小
+        min_patch_size: 最小 patch 大小
+        depth: Transformer 层数
+        fuse_layers: 融合层数量（控制注意力模式切换）
+        layer_attention_modes: 每层的注意力模式配置
+        windowed_attention_size: 窗口注意力大小
+    """
 
     supported_modality_names: list[str]
     embedding_size: int = 16
@@ -1568,7 +1637,14 @@ class STEncoderConfig(Config):
 
 @dataclass
 class STPredictorConfig(Config):
-    """Configuration for the STPredictor."""
+    """时空分离注意力预测器的配置类。
+
+    关键参数：
+        encoder_embedding_size: 编码器嵌入维度（用于维度映射）
+        decoder_embedding_size: 解码器嵌入维度
+        output_embedding_size: 输出嵌入维度（可选）
+        layer_attention_modes: 每层的注意力模式配置
+    """
 
     supported_modality_names: list[str]
     encoder_embedding_size: int = 16

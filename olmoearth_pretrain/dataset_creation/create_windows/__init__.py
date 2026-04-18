@@ -1,1 +1,10 @@
-"""Tools to initialize windows (examples)."""
+"""训练窗口（样本）创建工具模块。
+
+本模块提供创建 OlmoEarth Pretrain 训练窗口（即训练样本）的工具，
+包括从经纬度列表创建和随机位置创建两种方式。
+
+子模块:
+    - from_lon_lat_list.py: 从经纬度列表创建窗口
+    - random.py: 随机位置创建窗口
+    - util.py: 窗口创建的通用工具函数
+"""

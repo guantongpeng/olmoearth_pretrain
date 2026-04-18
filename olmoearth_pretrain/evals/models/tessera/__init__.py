@@ -1,1 +1,5 @@
-"""Tessera model integration."""
+"""Tessera 遥感基础模型集成。
+
+本模块提供 Tessera 模型的评估集成，包括模型类、配置类和启动脚本。
+Tessera 是一种用于遥感的预训练基础模型。
+"""

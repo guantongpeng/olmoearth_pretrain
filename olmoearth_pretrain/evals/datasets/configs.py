@@ -1,4 +1,19 @@
-"""A common home for all eval dataset configs."""
+"""评估数据集配置中心。
+
+本模块定义了所有评估数据集的配置信息，包括任务类型、类别数、
+是否多标签、支持的模态、归一化插补规则等。
+
+主要组件：
+- EvalDatasetConfig: 数据集配置数据类
+- DATASET_TO_CONFIG: 硬编码的数据集配置字典
+- dataset_to_config: 根据名称获取配置（优先查硬编码，再查注册表）
+- get_eval_mode: 根据任务类型获取默认评估方法
+
+已配置的数据集包括：
+  pretrain_subset, m-eurosat, m-bigearthnet, m-so2sat, m-brick-kiln,
+  m-sa-crop-type, m-cashew-plant, m-forestnet, mados, sen1floods11,
+  pastis, pastis128, breizhcrops, nandi, awf
+"""
 
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -9,7 +24,16 @@ from olmoearth_pretrain.evals.task_types import TaskType
 
 
 def get_eval_mode(task_type: TaskType) -> str:
-    """Get the eval mode for a given task type."""
+    """根据任务类型获取默认评估方法。
+
+    分类任务默认使用 KNN，分割任务默认使用线性探针。
+
+    Args:
+        task_type: 任务类型
+
+    Returns:
+        str: 评估方法名称 ("knn" 或 "linear_probe")
+    """
     if task_type == TaskType.CLASSIFICATION:
         return "knn"
     else:
@@ -21,7 +45,17 @@ __all__ = ["TaskType", "get_eval_mode", "EvalDatasetConfig"]
 
 @dataclass
 class EvalDatasetConfig:
-    """EvalDatasetConfig configs."""
+    """评估数据集配置数据类，包含数据集的所有元信息。
+
+    Attributes:
+        task_type: 任务类型（分类/分割）
+        imputes: 缺失波段的插补规则列表，每项为 (源波段, 目标波段) 元组
+        num_classes: 类别数量
+        is_multilabel: 是否为多标签分类
+        supported_modalities: 支持的模态列表
+        height_width: 输入/输出的高度和宽度（仅分割任务需要）
+        timeseries: 是否为时间序列数据集
+    """
 
     task_type: TaskType
     imputes: list[tuple[str, str]]
@@ -34,20 +68,22 @@ class EvalDatasetConfig:
     timeseries: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to dict."""
+        """序列化为字典，将 TaskType 枚举转换为其值字符串。"""
         d = asdict(self)
         d["task_type"] = self.task_type.value
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "EvalDatasetConfig":
-        """Deserialize from dict."""
+        """从字典反序列化，将字符串转换回 TaskType 枚举和元组。"""
         d = d.copy()
         d["task_type"] = TaskType(d["task_type"])
         d["imputes"] = [tuple(x) for x in d["imputes"]]
         return cls(**d)
 
 
+# 所有硬编码的评估数据集配置
+# 键: 数据集名称，值: EvalDatasetConfig 实例
 DATASET_TO_CONFIG = {
     # Dummy config — only used for embedding diagnostics, not actual classification.
     "pretrain_subset": EvalDatasetConfig(

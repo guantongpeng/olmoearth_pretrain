@@ -1,4 +1,12 @@
-"""Panopticon model https://github.com/Panopticon-FM/panopticon?tab=readme-ov-file ."""
+"""Panopticon 模型集成。https://github.com/Panopticon-FM/panopticon
+
+Panopticon 是一种多模态遥感基础模型，本模块提供 Panopticon 与
+OlmoEarth 评估框架的集成。
+
+主要组件：
+- Panopticon: Panopticon 模型类
+- PanopticonConfig: Panopticon 配置数据类
+"""
 
 import logging
 import math

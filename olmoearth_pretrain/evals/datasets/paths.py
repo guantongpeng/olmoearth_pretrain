@@ -1,4 +1,17 @@
-"""Dataset paths configured via environment variables."""
+"""数据集路径配置模块，通过环境变量配置。
+
+本模块定义了所有评估数据集的存储路径，优先使用环境变量，
+回退到内部默认路径（仅内部用户可用）。
+
+支持的数据集路径：
+- GEOBENCH_DIR: GeoBench 数据集目录
+- BREIZHCROPS_DIR: BreizhCrops 数据集目录
+- MADOS_DIR: MADOS 数据集目录
+- FLOODS_DIR: Sen1Floods11 数据集目录
+- PASTIS_DIR: PASTIS-R 数据集目录
+- PASTIS_DIR_ORIG: PASTIS-R 原始尺寸数据集目录
+- PASTIS_DIR_PARTITION: PASTIS 分区信息目录
+"""
 
 import os
 

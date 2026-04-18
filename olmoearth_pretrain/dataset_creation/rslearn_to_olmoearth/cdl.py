@@ -1,4 +1,8 @@
-"""Post-process ingested CDL crop type data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 CDL（农作物数据层）数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 CDL 作物类型数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式，
+包括元数据 CSV 的生成和数据文件的组织。CDL 提供美国每年的农作物分类信息。
+"""
 
 import argparse
 import csv

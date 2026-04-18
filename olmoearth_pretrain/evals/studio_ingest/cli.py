@@ -1,15 +1,15 @@
-r"""Command-line interface for Studio dataset ingestion.
+"""Studio 数据集摄取命令行界面。
 
-This module provides CLI commands for:
-- ingest: Full ingestion of a dataset
-- list: List all registered datasets
-- info: Show details for a specific dataset
+本模块提供 CLI 命令用于：
+- ingest: 完整的数据集摄取流程
+- list: 列出所有已注册的数据集
+- info: 显示特定数据集的详细信息
 
-Usage:
+使用方式：
     python -m olmoearth_pretrain.evals.studio_ingest.cli <command> [options]
 
-Examples:
-    # Ingest a dataset
+示例：
+    # 摄取数据集
     python -m olmoearth_pretrain.evals.studio_ingest.cli ingest \\
         --name lfmc \\
         --display-name "Live Fuel Moisture Content" \\
@@ -18,18 +18,11 @@ Examples:
         --modalities sentinel2_l2a sentinel1 \\
         --property-name lfmc_value
 
-    # List all datasets
+    # 列出所有数据集
     python -m olmoearth_pretrain.evals.studio_ingest.cli list
 
-    # Show dataset info
+    # 显示数据集信息
     python -m olmoearth_pretrain.evals.studio_ingest.cli info --name lfmc
-
-Todo:
------
-- [ ] Add --dry-run flag to ingest command
-- [ ] Add --output-format (json, table) for list/info commands
-- [ ] Add remove command (with confirmation)
-- [ ] Add update command for modifying existing entries
 """
 
 from __future__ import annotations

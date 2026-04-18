@@ -1,4 +1,8 @@
-"""Launch GCP Batch jobs to get Sentinel-2 L1C data."""
+"""启动 GCP Batch 作业获取 Sentinel-2 L1C 数据。
+
+本模块负责在 Google Cloud Platform 上启动批量作业，
+从 Copernicus 数据空间下载 Sentinel-2 L1C 级别的原始影像数据。
+"""
 
 import argparse
 import multiprocessing

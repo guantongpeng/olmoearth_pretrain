@@ -1,4 +1,24 @@
-"""Main finetuning training loop."""
+"""微调训练主循环模块。
+
+本模块实现了完整的微调训练和评估流程，是微调评估的核心入口。
+
+主要函数：
+- run_finetune_eval: 主函数，在下游任务上微调模型并评估
+- compute_eval_metrics: 评估微调后的模型
+- _save_best_and_cleanup: 保存最佳检查点并清理恢复检查点
+
+训练策略：
+1. 骨干网络冻结阶段：前 FREEZE_EPOCH_FRACTION 比例的 epoch 冻结骨干网络
+2. 骨干网络解冻阶段：解冻骨干网络，学习率降为 UNFREEZE_LR_FACTOR 倍
+3. 使用 ReduceLROnPlateau 调度器在验证指标停滞时自动降低学习率
+4. 支持从检查点恢复训练（应对抢占式中断）
+5. 记录最佳验证指标对应的模型状态，训练结束后加载最佳状态评估
+
+设计要点：
+- 支持 wandb 日志记录
+- 支持最佳检查点和恢复检查点的分离管理
+- 假设验证指标越高越好
+"""
 
 from __future__ import annotations
 
@@ -43,7 +63,14 @@ logger = getLogger(__name__)
 
 
 def _get_wandb_logger(trainer: Trainer) -> Any | None:
-    """Return the wandb module from the OlmoEarth callback, if available."""
+    """从 OlmoEarth 回调中获取 wandb 模块（如果可用）。
+
+    Args:
+        trainer: OlmoEarth Trainer 实例
+
+    Returns:
+        wandb 模块或 None（如果未启用）
+    """
     from olmoearth_pretrain.train.callbacks.wandb import OlmoEarthWandBCallback
 
     for callback in trainer._iter_callbacks():
@@ -57,7 +84,13 @@ def _save_best_and_cleanup(
     best_checkpoint_path: str | None,
     resume_checkpoint_path: str | None,
 ) -> None:
-    """Save the best model checkpoint and remove the resume checkpoint."""
+    """保存最佳模型检查点并删除恢复检查点。
+
+    Args:
+        best_state: 最佳模型的状态字典
+        best_checkpoint_path: 最佳检查点保存路径（None 则跳过保存）
+        resume_checkpoint_path: 恢复检查点路径（存在则删除）
+    """
     if best_checkpoint_path is not None:
         dir_path = os.path.dirname(best_checkpoint_path)
         if dir_path:
@@ -81,7 +114,21 @@ def compute_eval_metrics(
     primary_metric: EvalMetric | None = None,
     primary_metric_class: int | None = None,
 ) -> EvalTaskResult:
-    """Evaluate a finetuned model on val and test sets."""
+    """评估微调后的模型在验证集和测试集上的性能。
+
+    Args:
+        ft: 微调后的模型
+        task_config: 任务配置
+        val_loader: 验证集数据加载器
+        test_loader: 测试集数据加载器（可选）
+        device: 计算设备
+        patch_size: patch 大小
+        primary_metric: 主指标
+        primary_metric_class: 主指标的类别索引
+
+    Returns:
+        EvalTaskResult: 包含验证和测试评估结果
+    """
     ft.eval()
 
     if task_config.task_type == TaskType.CLASSIFICATION:
@@ -149,7 +196,41 @@ def run_finetune_eval(
     primary_metric: EvalMetric | None = None,
     primary_metric_class: int | None = None,
 ) -> EvalTaskResult:
-    """Finetune the model on a downstream task and evaluate."""
+    """在下游任务上微调模型并评估。
+
+    完整流程：
+    1. 设置随机种子
+    2. 构建 BackboneWithHead 模型
+    3. 如果最佳检查点已存在，直接加载并评估
+    4. 冻结骨干网络开始训练
+    5. 训练循环：前向传播、计算损失、反向传播、优化器步进
+    6. 每 epoch 评估验证指标，更新最佳状态
+    7. 保存恢复检查点（支持从中断恢复）
+    8. 训练结束后加载最佳状态，评估验证和测试集
+
+    Args:
+        task_name: 任务名称（用于日志和 wandb）
+        task_config: 任务配置
+        trainer: OlmoEarth Trainer 实例
+        model: 预训练模型
+        device: 计算设备
+        lr: 学习率
+        epochs: 训练 epoch 数
+        patch_size: patch 大小
+        pooling_type: 池化类型
+        use_pooled_tokens: 是否使用池化 token
+        train_loader: 训练集数据加载器
+        val_loader: 验证集数据加载器
+        test_loader: 测试集数据加载器（可选）
+        seed: 随机种子（可选）
+        best_checkpoint_path: 最佳检查点保存路径（可选）
+        resume_checkpoint_path: 恢复检查点路径（可选）
+        primary_metric: 主指标
+        primary_metric_class: 主指标的类别索引
+
+    Returns:
+        EvalTaskResult: 验证和测试评估结果
+    """
     if seed is not None:
         logger.info(f"Setting finetune random seed to {seed}")
         random.seed(seed)

@@ -1,4 +1,8 @@
-"""Post-process ingested Sentinel-2 L2A data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 Sentinel-2 L2A（大气校正）数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 Sentinel-2 L2A 级别数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+L2A 是经过 Sen2Cor 大气校正的底反射率产品。
+"""
 
 import argparse
 import multiprocessing

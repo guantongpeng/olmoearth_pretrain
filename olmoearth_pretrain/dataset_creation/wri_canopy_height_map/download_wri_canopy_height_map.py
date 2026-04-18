@@ -1,4 +1,8 @@
-"""Download Meta's tree canopy height model."""
+"""下载 Meta 的森林冠层高度模型数据。
+
+本模块负责从 WRI（世界资源研究所）/Meta 下载全球森林冠层高度图数据，
+该数据提供约 30 米分辨率的全球森林冠层高度估计。
+"""
 
 import multiprocessing
 import os

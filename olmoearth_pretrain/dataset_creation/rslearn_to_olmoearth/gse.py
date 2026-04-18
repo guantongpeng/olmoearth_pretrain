@@ -1,4 +1,8 @@
-"""Post-process ingested Google Satellite Embedding data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 Google Satellite Embedding (GSE) 数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 GSE 嵌入数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+GSE 提供基于 Google 卫星影像的预训练嵌入向量。
+"""
 
 import argparse
 import csv

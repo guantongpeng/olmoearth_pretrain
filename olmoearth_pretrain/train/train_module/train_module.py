@@ -1,3 +1,20 @@
+"""
+训练模块基类。
+
+本模块定义了 OlmoEarth Pretrain 的训练基类 OlmoEarthTrainModule，
+是所有具体训练模块（MAE、LatentMIM、Galileo 等）的父类。
+
+主要职责：
+- 模型初始化和数据并行配置（FSDP/DDP）
+- 优化器构建和学习率调度
+- 梯度裁剪
+- EMA 目标编码器更新
+- 状态字典管理（保存/加载/兼容性检查）
+- 正则化计算和日志记录
+- 微批次上下文管理（梯度累积）
+- 混合精度训练上下文管理
+"""
+
 """Training and optimizer abstraction for OlmoEarth Pretrain."""
 
 import contextlib
@@ -160,24 +177,31 @@ class OlmoEarthTrainModuleConfig(Config):
 
 
 class OlmoEarthTrainModule(TrainModule):
-    """A :class:`TrainModule`.
+    """OlmoEarth 训练模块基类。
 
-    Initialize the training module.
+    继承自 olmo-core 的 TrainModule，提供训练的基础框架，包括：
+    - 模型初始化和参数打印
+    - 数据并行配置（FSDP 或 DDP）
+    - torch.compile 编译支持
+    - 优化器构建
+    - 梯度裁剪（支持 FSDP 下的 DTensor）
+    - EMA 目标编码器更新（线性调度）
+    - 状态字典管理（兼容性检查、旧字段剔除）
+    - 正则化计算和日志记录
+    - 微批次上下文管理
+    - 混合精度训练上下文管理
 
-    Args:
-        model: The transformer model to train.
-        optim_config: The corresponding optimizer config.
-        transform_config: The transform configuration for the model.
-        rank_microbatch_size: The rank micro batch size in instances.
-        compile_model: Whether to compile to the model.
-        dp_config: Data parallel configuration for the model.
-        compile_loss: Whether to compile the loss function.
-        autocast_precision: Enable AMP with this data type.
-        max_grad_norm: Clip gradient norms to this value.
-        scheduler: Optional learning rate scheduler.
-        device: The device to train on.
-        state_dict_save_opts: Override state dict options for saving.
-        state_dict_load_opts: Override state dict options for loading.
+    子类（MAETrainModule、LatentMIMTrainModule、GalileoTrainModule 等）
+    需实现 train_batch、model_forward 等方法。
+
+    关键属性:
+        model: 要训练的模型
+        transform: 数据增强变换
+        optimizer: 优化器
+        device: 计算设备
+        max_grad_norm: 梯度裁剪阈值
+        scheduler: 学习率调度器
+        start_ema / end_ema: EMA 衰减率的起止值
     """
 
     def __init__(
@@ -532,11 +556,24 @@ class OlmoEarthTrainModule(TrainModule):
         return total_norm
 
     def update_target_encoder(self) -> None:
-        """Update the target encoder."""
-        # Update target encoder with EMA this should be a callback
+        """使用 EMA 更新目标编码器参数。
+
+        目标编码器的参数通过在线编码器参数的指数移动平均（EMA）进行更新：
+        target_param = ema_decay * target_param + (1 - ema_decay) * online_param
+
+        EMA 衰减率从 start_ema 线性调度到 end_ema：
+        cur_ema = start_ema + (global_step / max_steps) * (end_ema - start_ema)
+
+        当 start_ema == end_ema == 1.0 时，跳过更新（目标编码器不更新）。
+        支持 FSDP 下的 DTensor 参数更新。
+
+        注意：此方法应在每次训练步进前调用，且在 no_grad 上下文中执行。
+        """
+        # 若 EMA 衰减率始终为 1.0，则目标编码器不更新
         if self.start_ema == 1.0 and self.end_ema == 1.0:
             return
 
+        # 计算当前步的 EMA 衰减率（线性调度）
         cur_ema_value = (
             self.start_ema
             + self.trainer.global_step
@@ -544,23 +581,25 @@ class OlmoEarthTrainModule(TrainModule):
             / self.trainer.max_steps
         )
         with torch.no_grad():
+            # 记录当前 EMA 衰减率
             self.trainer.record_metric(
                 "train/ema_decay",
                 cur_ema_value,
                 ReduceType.mean,
             )
+            # 逐参数更新目标编码器
             for p, tp in zip(
                 self.model.encoder.parameters(), self.model.target_encoder.parameters()
             ):
                 if isinstance(p.data, DTensor):
-                    # get the local shard, update it in place
+                    # FSDP 下的 DTensor：获取本地分片并就地更新
                     p_local = p.data.to_local()
                     tp_local = tp.data.to_local()
                     tp_local.mul_(cur_ema_value).add_(
                         p_local, alpha=(1 - cur_ema_value)
                     )
                 else:
-                    # fallback for any plain Tensor
+                    # 普通 Tensor：直接就地更新
                     tp.data.mul_(cur_ema_value).add_(p.data, alpha=(1 - cur_ema_value))
 
     def eval_batch(

@@ -1,10 +1,9 @@
-"""Post-process EuroCrops data from rslearn to OlmoEarth format.
+"""将 EuroCrops 数据从 rslearn 格式后处理到 OlmoEarth 格式。
 
-EuroCrops is vector data with HCAT crop type codes. We rasterize it during the
-conversion process. The HCAT codes are hierarchical 10-digit codes. We convert them to
-flat class IDs using the mapping in data/eurocrops_hcat3_mapping.json, which was
-generated from the HCAT3.csv file from https://zenodo.org/records/14094196. The IDs are
-assigned in file order so that hierarchically similar crops have close IDs.
+EuroCrops 是包含 HCAT 农作物类型编码的矢量数据。在转换过程中我们将其栅格化。
+HCAT 编码是层次化的 10 位数字编码。我们使用 data/eurocrops_hcat3_mapping.json
+中的映射将其转换为扁平的类别 ID，该映射文件是从 https://zenodo.org/records/14094196
+的 HCAT3.csv 文件生成的。ID 按文件顺序分配，使层次相似的农作物具有相近的 ID。
 """
 
 import argparse

@@ -1,4 +1,14 @@
-"""Common utiities for laucnhing experiments on beaker."""
+"""在 Beaker 集群上启动实验的通用工具。
+
+本模块提供与 Beaker 集群交互的通用功能，包括：
+    - 实验配置的构建和序列化
+    - Beaker 作业的提交和管理
+    - 集群和优先级设置
+
+使用场景:
+    在 full_eval_sweep.py 和 checkpoint_sweep_evals.py 中，
+    用于构建和提交 Beaker 评估作业。
+"""
 
 import logging
 import os

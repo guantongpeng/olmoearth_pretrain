@@ -1,4 +1,14 @@
-"""PASTIS-R (S2+S1) dataset class."""
+"""PASTIS-R 农作物分割时间序列数据集模块。
+
+PASTIS-R (Pixel-wise Agrico-Temporal Segmentation based on Image
+Reconstruction) 是一个多时相农作物分割数据集，同时包含 Sentinel-2 和 Sentinel-1 数据。
+
+数据集特点：
+- 同时支持 Sentinel-2 (12 波段) 和 Sentinel-1 (2 波段) 输入
+- 19 类农作物标签，时间跨度约 12 个月
+- 支持不同尺寸的输入 (64x64 和 128x128)
+- 支持训练数据的不同分区比例
+"""
 
 import json
 import logging

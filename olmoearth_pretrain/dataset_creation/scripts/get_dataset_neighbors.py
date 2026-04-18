@@ -1,4 +1,7 @@
-"""Create new dataset by adding windows neighboring windows in an existing dataset."""
+"""通过添加现有数据集中窗口的邻居窗口来创建新数据集。
+
+本脚本在现有数据集的窗口周围添加相邻窗口，用于数据增强或扩展数据集覆盖范围。
+"""
 
 import argparse
 import json

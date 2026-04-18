@@ -1,4 +1,8 @@
-"""Post-process ingested Sentinel-2 data into the OlmoEarth Pretrain dataset."""
+"""将摄取的 Sentinel-2 光学数据后处理到 OlmoEarth Pretrain 数据集。
+
+本模块负责将 Sentinel-2 多光谱影像数据从 rslearn 格式转换为 OlmoEarth Pretrain 格式。
+Sentinel-2 提供 10-60 米分辨率的多光谱影像，包含 13 个波段。
+"""
 
 import argparse
 import multiprocessing

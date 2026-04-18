@@ -1,6 +1,12 @@
 # type: ignore
 # ruff: noqa
 
+"""Prithvi v2 MAE (Masked Autoencoder) 模型核心架构。
+
+源自 IBM Corp. 2024 的 Prithvi v2 实现，基于 MAE 架构。
+此文件为外部代码的本地副本，不做修改。
+"""
+
 # Copyright (c) IBM Corp. 2024. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");

@@ -1,4 +1,17 @@
-"""Breizhcrops eval dataset."""
+"""BreizhCrops 评估数据集模块。
+
+BreizhCrops 是法国布列塔尼地区的农作物分类时间序列数据集，
+基于 Sentinel-2 图像时间序列，覆盖 2017 年全年。
+
+数据集划分：
+- 训练集: FRH01 + FRH02 区域
+- 验证集: FRH03 区域
+- 测试集: FRH04 区域
+- 可选: Belle-Île 小区域（用于快速测试）
+
+本模块将 BreizhCrops 数据转换为 OlmoEarth 的 MaskedOlmoEarthSample 格式，
+支持使用预训练归一化统计量或数据集自带统计量。
+"""
 
 from logging import getLogger
 from pathlib import Path

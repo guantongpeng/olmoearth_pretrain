@@ -1,3 +1,19 @@
+"""
+Latent MIM 训练模块。
+
+本模块实现 Latent Masked Image Modeling (Latent MIM) 的训练逻辑，
+是 OlmoEarth Pretrain 的核心训练方法之一。
+
+训练流程：
+1. 对输入数据应用掩码策略，将 token 分为编码/解码/目标编码器三类
+2. 在线编码器处理编码 token，解码器尝试从编码表示重建解码 token 的潜在表示
+3. 目标编码器（EMA 更新）处理未掩码数据，提供训练目标
+4. 使用判别损失（如 PatchDiscrimination）训练解码器匹配目标编码器输出
+5. 可选的 MAE 重建损失和正则化损失
+
+参考：Latent MIM 论文（掩码图像建模在潜在空间进行对比学习）
+"""
+
 """Training and optimizer abstraction for OlmoEarth Pretrain."""
 
 from dataclasses import dataclass, field
@@ -72,29 +88,22 @@ class LatentMIMTrainModuleConfig(OlmoEarthTrainModuleConfig):
 
 
 class LatentMIMTrainModule(OlmoEarthTrainModule):
-    """A :class:`TrainModule`.
+    """Latent MIM 训练模块。
 
-    Initialize the training module.
+    实现 Latent Masked Image Modeling 的训练逻辑：
+    - 在线编码器编码可见 token，解码器重建掩码 token 的潜在表示
+    - 目标编码器（EMA 更新）提供训练目标
+    - 判别损失训练预测匹配目标
+    - 可选的 MAE 重建损失和正则化损失
+    - 支持微批次训练（梯度累积）
 
-    Args:
-        model: The transformer model to train.
-        optim: The corresponding optimizer config.
-        transform_config: The transform configuration for the model.
-        masking_config: The masking configuration for the model.
-        loss_config: The loss configuration for the model.
-        mae_loss_config: Optional loss config for masked auto-encoding.
-        rank_microbatch_size: The rank microbatch size in instances.
-        compile_model: Whether to compile to the model.
-        dp_config: Data parallel configuration for the model.
-        loss_fn: Loss function to use.
-        compile_loss: Whether to compile the loss function.
-        autocast_precision: Enable AMP with this data type.
-        max_grad_norm: Clip gradient norms to this value.
-        scheduler: Optional learning rate scheduler.
-        device: The device to train on.
-        state_dict_save_opts: Override state dict options for saving.
-        state_dict_load_opts: Override state dict options for loading.
-        token_exit_cfg: The token exit configuration for the model.
+    关键属性:
+        base_loss: 基础损失函数（通常为 PatchDiscrimination）
+        mae_loss: 可选的 MAE 重建损失
+        masking_strategy: 掩码策略
+        regularizer: 可选的正则化项
+        start_ema / end_ema: EMA 衰减率的起止值
+        token_exit_cfg: 各模态的 token 退出层配置
     """
 
     def __init__(

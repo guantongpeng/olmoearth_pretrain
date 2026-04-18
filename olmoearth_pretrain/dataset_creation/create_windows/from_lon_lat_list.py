@@ -1,4 +1,8 @@
-"""Create windows corresponding to a list of longitude/latitude."""
+"""从经纬度列表创建训练窗口。
+
+本脚本根据提供的经纬度坐标列表，在数据集中创建对应的训练窗口。
+适用于已知采样位置的场景，如特定城市的遥感数据采集。
+"""
 
 import argparse
 import json

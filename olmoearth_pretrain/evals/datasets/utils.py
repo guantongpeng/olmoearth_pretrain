@@ -1,4 +1,13 @@
-"""Shared functions across evaluation datasets."""
+"""评估数据集共享工具函数。
+
+本模块提供评估数据集中使用的通用工具函数：
+
+主要函数：
+- eval_collate_fn: 标准 DataLoader 整合函数
+- eval_collate_fn_variable_time: 支持可变时间步长的整合函数，
+  对不同长度的时序数据进行填充 (padding)，使同一批次的数据形状一致
+- load_min_max_stats: 加载数据集的最小/最大统计量（带缓存）
+"""
 
 import json
 from collections.abc import Sequence
