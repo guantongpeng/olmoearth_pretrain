@@ -25,8 +25,6 @@ logger = logging.getLogger(__name__)
 
 RTOL = 1e-4
 ATOL = 1e-6
-RTOL_LOOSE = 1e-3
-ATOL_LOOSE = 1e-5
 
 
 def test_patch_disc_loss() -> None:
@@ -1351,6 +1349,6 @@ def test_masked_neg_vec_large_batch() -> None:
     seq, vec = _make_masked_neg_pair()
     loss_seq = seq.compute(preds, targets)
     loss_vec = vec.compute(preds, targets)
-    assert torch.isclose(loss_seq, loss_vec, rtol=RTOL_LOOSE, atol=ATOL_LOOSE), (
+    assert torch.isclose(loss_seq, loss_vec, rtol=RTOL, atol=ATOL), (
         f"large batch: seq={loss_seq.item()}, vec={loss_vec.item()}"
     )
