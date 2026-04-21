@@ -23,6 +23,11 @@ from olmoearth_pretrain.train.masking import MaskValue
 
 logger = logging.getLogger(__name__)
 
+RTOL = 1e-4
+ATOL = 1e-6
+RTOL_LOOSE = 1e-3
+ATOL_LOOSE = 1e-5
+
 
 def test_patch_disc_loss() -> None:
     """Just test that it runs as expected."""
@@ -1184,7 +1189,7 @@ def test_masked_neg_vec_matches_sequential_uniform() -> None:
     seq, vec = _make_masked_neg_pair()
     loss_seq = seq.compute(preds, targets)
     loss_vec = vec.compute(preds, targets)
-    assert torch.isclose(loss_seq, loss_vec, rtol=1e-4, atol=1e-6), (
+    assert torch.isclose(loss_seq, loss_vec, rtol=RTOL, atol=ATOL), (
         f"seq={loss_seq.item()}, vec={loss_vec.item()}"
     )
 
@@ -1207,7 +1212,7 @@ def test_masked_neg_vec_matches_sequential_uneven() -> None:
         seq, vec = _make_masked_neg_pair()
         loss_seq = seq.compute(preds, targets)
         loss_vec = vec.compute(preds, targets)
-        assert torch.isclose(loss_seq, loss_vec, rtol=1e-4, atol=1e-6), (
+        assert torch.isclose(loss_seq, loss_vec, rtol=RTOL, atol=ATOL), (
             f"seed={seed}: seq={loss_seq.item()}, vec={loss_vec.item()}"
         )
 
@@ -1233,7 +1238,7 @@ def test_masked_neg_vec_with_identical_targets() -> None:
     seq, vec = _make_masked_neg_pair()
     loss_seq = seq.compute(preds, targets)
     loss_vec = vec.compute(preds, targets)
-    assert torch.isclose(loss_seq, loss_vec, rtol=1e-4, atol=1e-6), (
+    assert torch.isclose(loss_seq, loss_vec, rtol=RTOL, atol=ATOL), (
         f"identical targets: seq={loss_seq.item()}, vec={loss_vec.item()}"
     )
 
@@ -1267,10 +1272,10 @@ def test_masked_neg_vec_gradients() -> None:
         loss_v = vec.compute(preds_v, targets_v)
         loss_v.backward()
 
-        assert torch.isclose(loss_s, loss_v, rtol=1e-4, atol=1e-6), (
+        assert torch.isclose(loss_s, loss_v, rtol=RTOL, atol=ATOL), (
             f"seed={seed}: loss seq={loss_s.item()}, vec={loss_v.item()}"
         )
-        assert torch.allclose(s2_seq.grad, s2_vec.grad, rtol=1e-4, atol=1e-6), (
+        assert torch.allclose(s2_seq.grad, s2_vec.grad, rtol=RTOL, atol=ATOL), (
             f"seed={seed}: grad max diff="
             f"{(s2_seq.grad - s2_vec.grad).abs().max().item()}"
         )
@@ -1297,7 +1302,7 @@ def test_masked_neg_vec_missing_samples() -> None:
     seq, vec = _make_masked_neg_pair()
     loss_seq = seq.compute(preds, targets)
     loss_vec = vec.compute(preds, targets)
-    assert torch.isclose(loss_seq, loss_vec, rtol=1e-4, atol=1e-6), (
+    assert torch.isclose(loss_seq, loss_vec, rtol=RTOL, atol=ATOL), (
         f"seq={loss_seq.item()}, vec={loss_vec.item()}"
     )
 
@@ -1323,7 +1328,7 @@ def test_masked_neg_vec_selective_modality_masking() -> None:
     seq, vec = _make_masked_neg_pair(mask_modalities=["worldcover"])
     loss_seq = seq.compute(preds, targets)
     loss_vec = vec.compute(preds, targets)
-    assert torch.isclose(loss_seq, loss_vec, rtol=1e-4, atol=1e-6), (
+    assert torch.isclose(loss_seq, loss_vec, rtol=RTOL, atol=ATOL), (
         f"selective: seq={loss_seq.item()}, vec={loss_vec.item()}"
     )
 
@@ -1346,6 +1351,6 @@ def test_masked_neg_vec_large_batch() -> None:
     seq, vec = _make_masked_neg_pair()
     loss_seq = seq.compute(preds, targets)
     loss_vec = vec.compute(preds, targets)
-    assert torch.isclose(loss_seq, loss_vec, rtol=1e-3, atol=1e-5), (
+    assert torch.isclose(loss_seq, loss_vec, rtol=RTOL_LOOSE, atol=ATOL_LOOSE), (
         f"large batch: seq={loss_seq.item()}, vec={loss_vec.item()}"
     )
