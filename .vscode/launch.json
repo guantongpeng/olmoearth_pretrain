@@ -12,9 +12,9 @@
                 "train",
                 "my_debug_run",
                 "local",
-                "--dataset.h5py_dir=/home/guantp/pro/olmoearth_pretrain/dataset/3996",
-                "--train_module.rank_microbatch_size=1",
-                "--data_loader.global_batch_size=1",
+                "--dataset.h5py_dir=/home/guantp/pro/olmoearth_pretrain/data/dataset/3996",
+                "--train_module.rank_microbatch_size=4",
+                "--data_loader.global_batch_size=4",
                 "--data_loader.num_workers=0",
                 "--data_loader.prefetch_factor=1",
                 "--trainer.callbacks.wandb.enabled=False",
@@ -25,7 +25,9 @@
             "justMyCode": true,
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0",
-                "PYTHONUNBUFFERED": "1"
+                "PYTHONUNBUFFERED": "1",
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "10",
+                "PYTHONWARNINGS": "ignore::UserWarning:debugpy"
             },
             "cwd": "${workspaceFolder}"
         }

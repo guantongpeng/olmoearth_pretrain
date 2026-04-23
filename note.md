@@ -1097,15 +1097,6 @@ HDF5 文件 (磁盘/GCS)
     参数来自 data/norm_configs/computed.json，逐波段 mean/std
 ```
 
-步骤 5: 过滤
-  - 检查样本是否有至少一个时空变化训练模态
-  - 无有效数据的样本被跳过
-
-步骤 6: 返回 OlmoEarthSample
-  - NamedTuple，每个模态一个字段 (Tensor 或 None)
-  - 包含 timestamps 信息
-```
-
 ### 9.4 OlmoEarthDataLoader — 批次化与动态参数
 
 **文件**: `data/dataloader.py`
