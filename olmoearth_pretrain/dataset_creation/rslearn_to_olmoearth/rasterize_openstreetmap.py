@@ -17,6 +17,7 @@ import tqdm
 from rasterio.crs import CRS
 from rslearn.utils.geometry import Projection
 from rslearn.utils.mp import star_imap_unordered
+from rslearn.utils.raster_array import RasterArray
 from upath import UPath
 
 from olmoearth_pretrain.data.constants import Modality, TimeSpan
@@ -215,7 +216,7 @@ def rasterize_openstreetmap(olmoearth_path: UPath, in_fname: UPath) -> None:
         path=out_fname.parent,
         projection=Projection(crs, OUTPUT_RESOLUTION, -OUTPUT_RESOLUTION),
         bounds=bounds,
-        array=array,
+        raster=RasterArray(chw_array=array),
         fname=out_fname.name,
     )
 

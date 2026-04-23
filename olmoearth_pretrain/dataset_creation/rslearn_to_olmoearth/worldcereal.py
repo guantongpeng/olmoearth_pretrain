@@ -13,6 +13,7 @@ import numpy as np
 import tqdm
 from rslearn.dataset import Dataset, Window
 from rslearn.utils.mp import star_imap_unordered
+from rslearn.utils.raster_array import RasterArray
 from upath import UPath
 
 from olmoearth_pretrain.data.constants import Modality, TimeSpan
@@ -63,7 +64,7 @@ def convert_worldcereal(window: Window, olmoearth_path: UPath) -> None:
         ndarrays.append(
             GEOTIFF_RASTER_FORMAT.decode_raster(
                 path=window_dir, projection=window.projection, bounds=window.bounds
-            )
+            ).get_chw_array()
         )
 
     assert len(ndarrays) == len(band_set.bands), (
@@ -94,7 +95,7 @@ def convert_worldcereal(window: Window, olmoearth_path: UPath) -> None:
         path=dst_fname.parent,
         projection=window.projection,
         bounds=window.bounds,
-        array=concatenated_arrays,
+        raster=RasterArray(chw_array=concatenated_arrays),
         fname=dst_fname.name,
     )
     metadata_fname = get_modality_temp_meta_fname(
