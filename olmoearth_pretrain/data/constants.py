@@ -593,6 +593,18 @@ class Modality:
         ignore_when_parsing=False,
     )
 
+    # 2.5m RGB 高分辨率影像，3 波段（R, G, B），静态
+    # 覆盖与 Sentinel-2 10m 瓦片相同的地理范围，以 2.5m 分辨率存储
+    # image_tile_size_factor=4：与 naip_10 相同策略，将 2.5m 分辨率降至 10m 等效尺寸用于训练
+    RGB_2_5 = ModalitySpec(
+        name="rgb_2_5",
+        tile_resolution_factor=16,
+        band_sets=[BandSet(["R", "G", "B"], 4)],
+        is_multitemporal=False,
+        ignore_when_parsing=False,
+        image_tile_size_factor=4,
+    )
+
     @classmethod
     def get(self, name: str) -> ModalitySpec:
         """根据名称获取对应的 ModalitySpec 实例。

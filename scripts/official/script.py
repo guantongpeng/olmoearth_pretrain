@@ -56,15 +56,16 @@ def build_common_components(
     """Build the common components for an experiment."""
     config = build_common_components_default(script, cmd, run_name, cluster, overrides)
     config.training_modalities = [
-        Modality.SENTINEL2_L2A.name,
+        Modality.RGB_2_5.name,
         Modality.SENTINEL1.name,
-        Modality.LANDSAT.name,
-        Modality.WORLDCOVER.name,
-        Modality.SRTM.name,
-        Modality.OPENSTREETMAP_RASTER.name,
-        Modality.WRI_CANOPY_HEIGHT_MAP.name,
-        Modality.CDL.name,
-        Modality.WORLDCEREAL.name,
+        # Modality.SENTINEL2_L2A.name,
+        # Modality.LANDSAT.name,
+        # Modality.WORLDCOVER.name,
+        # Modality.SRTM.name,
+        # Modality.OPENSTREETMAP_RASTER.name,
+        # Modality.WRI_CANOPY_HEIGHT_MAP.name,
+        # Modality.CDL.name,
+        # Modality.WORLDCEREAL.name,
     ]
     return config
 
@@ -82,12 +83,12 @@ def get_masking_config(common: CommonComponents) -> MaskingConfig:
             "decode_ratio": 0.5,
             "allow_encoding_decoding_same_bandset": True,
             "only_decode_modalities": [
-                Modality.WORLDCOVER.name,
-                Modality.SRTM.name,
-                Modality.OPENSTREETMAP_RASTER.name,
-                Modality.WRI_CANOPY_HEIGHT_MAP.name,
-                Modality.CDL.name,
-                Modality.WORLDCEREAL.name,
+                # Modality.WORLDCOVER.name,
+                # Modality.SRTM.name,
+                # Modality.OPENSTREETMAP_RASTER.name,
+                # Modality.WRI_CANOPY_HEIGHT_MAP.name,
+                # Modality.CDL.name,
+                # Modality.WORLDCEREAL.name,
             ],
         },
         tokenization_config=common.tokenization_config,

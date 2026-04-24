@@ -542,6 +542,15 @@ class OlmoEarthDataLoader(DataLoaderBase):
                 dtype=np.float32,
             )
             output_dict["eurocrops"] = mock_eurocrops
+        if Modality.RGB_2_5.name in self.dataset.training_modalities:
+            mock_rgb_2_5 = rng.random(
+                (standard_hw * Modality.RGB_2_5.image_tile_size_factor,
+                 standard_hw * Modality.RGB_2_5.image_tile_size_factor,
+                 1,
+                 Modality.RGB_2_5.num_bands),
+                dtype=np.float32,
+            )
+            output_dict[Modality.RGB_2_5.name] = mock_rgb_2_5
 
         # 生成随机时间戳：日期(0-24)、月份(0-11)、年份(2018-2019)
         days = rng.integers(0, 25, (12, 1))

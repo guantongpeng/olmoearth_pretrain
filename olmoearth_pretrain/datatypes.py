@@ -171,6 +171,7 @@ class OlmoEarthSample(NamedTuple):
     # ndvi 由 S2 L2A 的 B04（红光）和 B08（近红外）波段计算得到，不从文件加载
     ndvi: ArrayTensor | None = None  # NDVI 植被指数 [B, H, W, T, 1]
     eurocrops: ArrayTensor | None = None  # EuroCrops 欧洲作物分类 [B, H, W, 1, 1]
+    rgb_2_5: ArrayTensor | None = None  # 2.5m RGB 高分辨率影像 [B, H*4, W*4, 1, 3]
     # ==================== 元数据字段 ====================
     latlon: ArrayTensor | None = None  # 经纬度坐标 [B, 2]
     timestamps: ArrayTensor | None = None  # 时间戳 [B, T, D=3]，D=[日, 月, 年]
@@ -644,6 +645,8 @@ class MaskedOlmoEarthSample(NamedTuple):
     ndvi_mask: Tensor | None = None
     eurocrops: Tensor | None = None
     eurocrops_mask: Tensor | None = None
+    rgb_2_5: Tensor | None = None
+    rgb_2_5_mask: Tensor | None = None
 
     def as_dict(self, include_nones: bool = False) -> dict[str, Any]:
         """将掩码样本转换为字典。
@@ -851,6 +854,8 @@ class TokensAndMasks(NamedTuple):
     ndvi_mask: Tensor | None = None
     eurocrops: Tensor | None = None
     eurocrops_mask: Tensor | None = None
+    rgb_2_5: Tensor | None = None
+    rgb_2_5_mask: Tensor | None = None
     latlon: Tensor | None = None
     latlon_mask: Tensor | None = None
 

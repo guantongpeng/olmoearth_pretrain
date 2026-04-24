@@ -492,6 +492,11 @@ class OlmoEarthDataset(Dataset):
             supported_modalities.remove("naip")
             supported_modalities.remove("10")
             supported_modalities.append("naip_10")
+        if "rgb" in supported_modalities and "2" in supported_modalities and "5" in supported_modalities:
+            supported_modalities.remove("rgb")
+            supported_modalities.remove("2")
+            supported_modalities.remove("5")
+            supported_modalities.append("rgb_2_5")
         # 经纬度随每个 h5py 文件保存
         supported_modalities.append("latlon")
         num_samples = int(self.h5py_dir.name)  # 目录名即为样本数量
